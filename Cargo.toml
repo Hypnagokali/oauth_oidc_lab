@@ -1,0 +1,8 @@
+[package]
+name = "oauth_lab"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = "4"
+maud = { version = "0.27", features = ["actix-web"] }
