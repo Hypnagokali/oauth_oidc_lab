@@ -1,6 +1,6 @@
 use std::env;
 
-use actix_web::{get, web::{Data, Query, Redirect}, App, HttpResponse, HttpServer, Responder};
+use actix_web::{cookie::Cookie, get, web::{Data, Query, Redirect}, App, HttpResponse, HttpServer, Responder};
 use maud::{html, Markup};
 
 struct OAuthConfig {
@@ -35,12 +35,16 @@ async fn sso_github(response_query: Query<OAuthResponse>) -> impl Responder {
 
 #[get("/login/github")]
 async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
+    let _state_cookie =Cookie::new("state", "random_state_string");
+
     let redirect_uri = urlencoding::encode(&oauth_config.redirect_uri);
     let s = format!(
-        "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=user:email",
+        "https://github.com/login/oauth/authorize?client_id={}&redirect_uri={}&scope=user:email&state=random_state_string",
         oauth_config.client_id,
         redirect_uri
     );
+
+    // TODO: Set state cookie (use HttpResponse)
     Redirect::to(s).temporary()
 }
 
@@ -52,7 +56,7 @@ async fn login() -> Markup {
                 h1 { "Login page" }
                 p { "This is a dummy site, nothing works at the moment" }
                 div {
-                    a href="#" { "Login with GitHub" }
+                    a href="/login/github" { "Login with GitHub" }
                 }
                 div {
                     a href="#" { "Login with Google" }
