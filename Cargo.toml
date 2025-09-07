@@ -9,3 +9,7 @@ maud = { version = "0.27", features = ["actix-web"] }
 dotenv = "0.15.0"
 urlencoding = "2.1.3"
 serde = "1.0.219"
+serde_urlencoded = "0.7"
+sha2 = "0.10.9"
+base64 = "0.22.1"
+reqwest = "0.12.23"
