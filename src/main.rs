@@ -1,8 +1,9 @@
-use std::{env, os::linux::raw::stat};
+use std::env;
 
-use actix_web::{cookie::Cookie, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use actix_web::{cookie::{time::Duration, Cookie}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
+use rand::TryRngCore;
 use reqwest::{redirect::Policy, ClientBuilder};
 use serde::Serialize;
 use sha2::Digest;
@@ -68,10 +69,23 @@ impl OAuthConfig {
     }
 }
 
+
+fn generate_random_code() -> String {
+    let random_bytes = [0u8; 32];
+    rand::rngs::OsRng.try_fill_bytes(&mut random_bytes.clone()).unwrap();
+    let random_code = BASE64_URL_SAFE_NO_PAD.encode(random_bytes);
+    random_code
+}
+
 #[get("/sso-github")]
 async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oauth_config: Data<OAuthConfig>) -> impl Responder {
     let state_from_auth = &response_query.state;
     let state_cookie = req.cookie("state");
+    let pkce_cookie = req.cookie("pkce");
+
+    if pkce_cookie.is_none() {
+        return HttpResponse::Unauthorized().body("Missing PKCE cookie");
+    }
 
     if state_cookie.is_none() || state_cookie.unwrap().value() != state_from_auth {
         // Redirect back to /login/github
@@ -83,7 +97,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
 
     let mut code_request = oauth_config.token_request();
     code_request.set_code(&response_query.code);
-    code_request.set_code_verifier("randomstring");
+    code_request.set_code_verifier(pkce_cookie.unwrap().value());
 
     let res = ClientBuilder::new()
         .redirect(Policy::none())
@@ -104,15 +118,20 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
 #[get("/login/github")]
 async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
     println!("GET /login/github");
-    let mut state_cookie = Cookie::new("state", "random_state_string");
+    let mut state_cookie = Cookie::new("state", generate_random_code());
     state_cookie.set_http_only(true);
-    // ToDo: what about cookie lifetime?
+    state_cookie.set_max_age(Duration::minutes(15));
 
     // build PKCE challenge
+    let pkce = generate_random_code();
     let mut hasher = sha2::Sha256::new();
-    hasher.update(b"randomstring");
+    hasher.update(pkce.as_bytes());
     let hash_bytes = hasher.finalize();
     let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);
+
+    let mut pkce_cookie = Cookie::new("pkce", pkce);
+    pkce_cookie.set_http_only(true);
+    pkce_cookie.set_max_age(Duration::minutes(15));
 
     let redirect_uri = urlencoding::encode(&oauth_config.redirect_uri);
     
