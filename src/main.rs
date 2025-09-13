@@ -1,12 +1,15 @@
-use std::env;
+use std::{collections::HashMap, env};
 
-use actix_web::{cookie::{time::Duration, Cookie}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
 use rand::TryRngCore;
 use reqwest::{redirect::Policy, ClientBuilder};
 use serde::Serialize;
 use sha2::Digest;
+
+const PKCE_COOKIE_NAME: &str = "pkce";
+const STATE_COOKIE_NAME: &str = "state";
 
 struct OAuthConfig {
     client_id: String,
@@ -15,6 +18,7 @@ struct OAuthConfig {
     redirect_uri: String,
     auth_uri: String,
     token_uri: String,
+    user_info_endpoint: String,
 }
 
 #[derive(Serialize)]
@@ -47,7 +51,7 @@ struct OAuthResponse {
 }
 
 impl OAuthConfig {
-    fn new(client_id: String, client_secret: String, oauth_user_name: String, redirect_uri: String, auth_uri: String, token_uri: String) -> Self {
+    fn new(client_id: String, client_secret: String, oauth_user_name: String, redirect_uri: String, auth_uri: String, token_uri: String, user_info_endpoint: String) -> Self {
         OAuthConfig {
             client_id,
             client_secret,
@@ -55,6 +59,7 @@ impl OAuthConfig {
             redirect_uri,
             auth_uri,
             token_uri,
+            user_info_endpoint,
         }
     }
 
@@ -69,37 +74,57 @@ impl OAuthConfig {
     }
 }
 
+fn invalidate_cookie(cookie: &mut Cookie<'_>) {
+    cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(1));
+}
+
+fn create_cookie(name: &str, value: &str) -> Cookie<'static> {
+    let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
+    cookie.set_max_age(Duration::minutes(15));
+    cookie.set_http_only(true);
+    cookie.set_path("/");
+    cookie.set_same_site(SameSite::Lax);
+    cookie
+}
 
 fn generate_random_code() -> String {
-    let random_bytes = [0u8; 32];
-    rand::rngs::OsRng.try_fill_bytes(&mut random_bytes.clone()).unwrap();
+    let mut random_bytes = [0u8; 64];
+    rand::rngs::OsRng.try_fill_bytes(&mut random_bytes).unwrap();
     let random_code = BASE64_URL_SAFE_NO_PAD.encode(random_bytes);
     random_code
 }
 
+
 #[get("/sso-github")]
 async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oauth_config: Data<OAuthConfig>) -> impl Responder {
     let state_from_auth = &response_query.state;
-    let state_cookie = req.cookie("state");
-    let pkce_cookie = req.cookie("pkce");
 
-    if pkce_cookie.is_none() {
+    let mut pkce_cookie = if let Some (pkce) = req.cookie(PKCE_COOKIE_NAME) {
+        pkce
+    } else {
         return HttpResponse::Unauthorized().body("Missing PKCE cookie");
-    }
+    };
 
-    if state_cookie.is_none() || state_cookie.unwrap().value() != state_from_auth {
-        // Redirect back to /login/github
-        // max tries: about 3x and then return 401:
-        return HttpResponse::Unauthorized().body("Invalid state parameter");
-    }
+    // TODO:
+    // Redirect back to /login/github
+    // max tries: about 3x and then return 401:
+    let mut state_cookie = if let Some(state) = req.cookie(STATE_COOKIE_NAME) {
+        if state.value() != state_from_auth {
+            return HttpResponse::Unauthorized().body("Invalid state parameter");
+        }
 
-    println!("SSO GitHub endpoint hit: code: {}, state: {}", response_query.code, response_query.state);
+        state
+    } else {
+        return HttpResponse::Unauthorized().body("Missing state cookie");
+    };
+
+    println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code, response_query.state);
 
     let mut code_request = oauth_config.token_request();
     code_request.set_code(&response_query.code);
-    code_request.set_code_verifier(pkce_cookie.unwrap().value());
+    code_request.set_code_verifier(pkce_cookie.value());
 
-    let res = ClientBuilder::new()
+    let token_res = ClientBuilder::new()
         .redirect(Policy::none())
         .build()
         .unwrap()
@@ -108,19 +133,42 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
         .send()
         .await.unwrap();
 
-    println!("Token response: {}", res.status());
+    println!("Token response: {}", token_res.status());
 
-    let token = res.text().await.unwrap();
+    let token = token_res.text().await.unwrap();
+
+    let user_response = ClientBuilder::new()
+        .redirect(Policy::none())
+        .build()
+        .unwrap()
+        .get(&oauth_config.user_info_endpoint)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await.unwrap();
+
+    let raw_user_info: HashMap<String, serde_json::Value> = user_response.json().await.unwrap();
+
+    println!("raw_user_info:\n{:?}", raw_user_info);
     
-    HttpResponse::Ok().body(format!("Your token is: {}", token))
+    let user_info: HashMap<String, String> = raw_user_info.into_iter()
+    .map(|(k, v)| (k, v.to_string()))
+    .collect();
+
+    println!("user_info:\n{:?}", user_info);
+
+    invalidate_cookie(&mut pkce_cookie);    
+    invalidate_cookie(&mut state_cookie);    
+    HttpResponse::Ok()
+        .cookie(pkce_cookie)
+        .cookie(state_cookie)
+        .body(format!("Your token is: {}", token))
 }
 
 #[get("/login/github")]
 async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
     println!("GET /login/github");
-    let mut state_cookie = Cookie::new("state", generate_random_code());
-    state_cookie.set_http_only(true);
-    state_cookie.set_max_age(Duration::minutes(15));
+    let state = generate_random_code();
+    let state_cookie = create_cookie(STATE_COOKIE_NAME, &state);
 
     // build PKCE challenge
     let pkce = generate_random_code();
@@ -129,24 +177,27 @@ async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
     let hash_bytes = hasher.finalize();
     let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);
 
-    let mut pkce_cookie = Cookie::new("pkce", pkce);
-    pkce_cookie.set_http_only(true);
-    pkce_cookie.set_max_age(Duration::minutes(15));
+    let pkce_cookie = create_cookie(PKCE_COOKIE_NAME, &pkce);
 
     let redirect_uri = urlencoding::encode(&oauth_config.redirect_uri);
     
     let auth_redirect = format!(
-        "{}?client_id={}&redirect_uri={}&scope=user:email&state=random_state_string&code_challenge_method=S256&code_challenge={}",
+        "{}?client_id={}&redirect_uri={}&scope=user:email&state={}&code_challenge_method=S256&code_challenge={}",
         oauth_config.auth_uri,
         oauth_config.client_id,
         redirect_uri,
+        state,
         pkce_hash_b64
     );
+
+    let c = create_cookie("Knubbel", "Hase");
 
     HttpResponse::TemporaryRedirect()
         .append_header(("Location", auth_redirect))
         .append_header(("Cache-Control", "no-store"))
         .cookie(state_cookie)
+        .cookie(pkce_cookie)
+        .cookie(c)
         .finish()
 }
 
@@ -177,7 +228,8 @@ async fn main() -> std::io::Result<()> {
     let redirect_uri = env::var("redirect_uri").expect("redirect_uri must be set");
     let auth_uri = env::var("auth_uri").expect("auth_uri must be set");
     let token_uri = env::var("token_uri").expect("token_uri must be set");
-    let config: Data<OAuthConfig>= Data::new(OAuthConfig::new(client_id, client_secret, oauth_user_name, redirect_uri, auth_uri, token_uri));
+    let userinfo_endpoint = env::var("userinfo_endpoint").expect("userinfo_endpoint must be set");
+    let config: Data<OAuthConfig>= Data::new(OAuthConfig::new(client_id, client_secret, oauth_user_name, redirect_uri, auth_uri, token_uri, userinfo_endpoint));
 
     HttpServer::new(move || {
             App::new()
