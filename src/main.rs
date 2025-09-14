@@ -4,7 +4,7 @@ use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, ge
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
-use reqwest::{redirect::Policy, ClientBuilder};
+use reqwest::{header::{HeaderMap, HeaderValue}, redirect::Policy, ClientBuilder};
 use serde::Serialize;
 use sha2::Digest;
 
@@ -19,6 +19,11 @@ struct OAuthConfig {
     auth_uri: String,
     token_uri: String,
     user_info_endpoint: String,
+}
+
+#[derive(serde::Deserialize)]
+struct TokenResponse {
+    access_token: String,
 }
 
 #[derive(Serialize)]
@@ -132,8 +137,13 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
         }
     };
 
+    let mut headers = HeaderMap::new();
+    headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
+    headers.insert("User-Agent", HeaderValue::from_static("OAuth2TestApp"));
+
     let client = match ClientBuilder::new()
         .redirect(Policy::none())
+        .default_headers(headers)
         .build() {
             Ok(client) => client,
             Err(e) => {
@@ -159,11 +169,21 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
 
     println!("Token response status: {}", token_response.status());
 
-    let token = match token_response.text().await {
+    let token_raw_response = match token_response.text().await {
         Ok(body) => body,
         Err(e) => {
             println!("Error parsing token response body: {}", e);
             return HttpResponse::InternalServerError().body("Error parsing token response body");
+        }
+    };
+
+    let token = match serde_json::from_str::<TokenResponse>(&token_raw_response) {
+        Ok(token_response) => {
+            token_response.access_token
+        },
+        Err(e) => {
+            println!("Error deserializing token response: {}", e);
+            return HttpResponse::InternalServerError().body("Error deserializing token response");
         }
     };
 
@@ -182,6 +202,9 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
 
     println!("Response status from user info request: {}", user_response.status());
 
+    user_response.headers().iter().for_each(|(k, v)| {
+        println!("Header: {}: {:?}", k, v);
+    });
     if user_response.status().as_u16() >= 400 {
         return HttpResponse::InternalServerError().body("Couldn't fetch user info data.");
     }
@@ -203,11 +226,16 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
     println!("user_info:\n{:?}", user_info);
 
     invalidate_cookie(&mut pkce_cookie);    
-    invalidate_cookie(&mut state_cookie);    
+    invalidate_cookie(&mut state_cookie);
+
+    // TODO:
+    // - read name from user info
+    // - create session for user
+    // - store access token
     HttpResponse::Ok()
         .cookie(pkce_cookie)
         .cookie(state_cookie)
-        .body(format!("Your token is: {}", token))
+        .body(format!("Your token is: {}", token_raw_response))
 }
 
 #[get("/login/github")]
@@ -241,7 +269,7 @@ async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
     let redirect_uri = urlencoding::encode(&oauth_config.redirect_uri);
     
     let auth_redirect = format!(
-        "{}?client_id={}&redirect_uri={}&scope=user:email&state={}&code_challenge_method=S256&code_challenge={}",
+        "{}?client_id={}&redirect_uri={}&scope=read:user&state={}&code_challenge_method=S256&code_challenge={}",
         oauth_config.auth_uri,
         oauth_config.client_id,
         redirect_uri,
@@ -249,14 +277,11 @@ async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
         pkce_hash_b64
     );
 
-    let c = create_cookie("Knubbel", "Hase");
-
     HttpResponse::TemporaryRedirect()
         .append_header(("Location", auth_redirect))
         .append_header(("Cache-Control", "no-store"))
         .cookie(state_cookie)
         .cookie(pkce_cookie)
-        .cookie(c)
         .finish()
 }
 
