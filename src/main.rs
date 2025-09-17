@@ -152,7 +152,6 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
             }
     };
 
-
     let token_response_result = client.post(&oauth_config.token_uri)
         .body(body)
         .send()
@@ -225,7 +224,11 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
 
     println!("user_info:\n{:?}", user_info);
 
-    invalidate_cookie(&mut pkce_cookie);    
+    let user = user_info.get(&oauth_config.oauth_user_name)
+        .map(|s| s.as_str())
+        .unwrap_or("unknown user");
+
+    invalidate_cookie(&mut pkce_cookie);
     invalidate_cookie(&mut state_cookie);
 
     // TODO:
@@ -235,7 +238,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
     HttpResponse::Ok()
         .cookie(pkce_cookie)
         .cookie(state_cookie)
-        .body(format!("Your token is: {}", token_raw_response))
+        .body(format!("You are logged in. Hi {}", user))
 }
 
 #[get("/login/github")]
