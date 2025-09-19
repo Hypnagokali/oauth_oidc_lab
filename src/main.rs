@@ -1,83 +1,15 @@
-use std::{collections::HashMap, env};
-
 use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpServer, Responder};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
-use reqwest::{header::{HeaderMap, HeaderValue}, redirect::Policy, ClientBuilder};
-use serde::Serialize;
-use sha2::Digest;
+
+use crate::oauth::provider::{OAuthConfig, OAuthResponse, OAuthProvider};
+
+pub mod oauth;
 
 const PKCE_COOKIE_NAME: &str = "pkce";
 const STATE_COOKIE_NAME: &str = "state";
 
-struct OAuthConfig {
-    client_id: String,
-    client_secret: String,
-    oauth_user_name: String,
-    redirect_uri: String,
-    auth_uri: String,
-    token_uri: String,
-    user_info_endpoint: String,
-}
-
-#[derive(serde::Deserialize)]
-struct TokenResponse {
-    access_token: String,
-}
-
-#[derive(Serialize)]
-struct TokenRequest {
-    client_id: String,
-    client_secret: String,
-    code: String,
-    redirect_uri: String,
-    code_verifier: String,
-}
-
-impl TokenRequest {
-    pub fn set_code(&mut self, code: &str) {
-        self.code = code.to_string();
-    }
-
-    pub fn set_code_verifier(&mut self, code_verifier: &str) {
-        self.code_verifier = code_verifier.to_string();
-    }
-
-    pub fn to_urlencoded(&self) -> Result<String, serde_urlencoded::ser::Error> {
-        serde_urlencoded::to_string(self)
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct OAuthResponse {
-    code: String,
-    state: String,
-}
-
-impl OAuthConfig {
-    fn new(client_id: String, client_secret: String, oauth_user_name: String, redirect_uri: String, auth_uri: String, token_uri: String, user_info_endpoint: String) -> Self {
-        OAuthConfig {
-            client_id,
-            client_secret,
-            oauth_user_name,
-            redirect_uri,
-            auth_uri,
-            token_uri,
-            user_info_endpoint,
-        }
-    }
-
-    fn token_request(&self) -> TokenRequest {
-        TokenRequest {
-            client_id: self.client_id.clone(),
-            client_secret: self.client_secret.clone(),
-            code: "".to_string(),
-            redirect_uri: self.redirect_uri.clone(),
-            code_verifier: "".to_string(),
-        }
-    }
-}
 
 fn invalidate_cookie(cookie: &mut Cookie<'_>) {
     cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(1));
@@ -101,8 +33,8 @@ fn generate_random_code() -> Result<String, OsError> {
 }
 
 #[get("/sso-github")]
-async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oauth_config: Data<OAuthConfig>) -> impl Responder {
-    let state_from_provider = &response_query.state;
+async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, provider: Data<OAuthProvider>) -> impl Responder {
+    let state_from_provider = response_query.state();
 
     let mut pkce_cookie = if let Some (pkce_cookie) = req.cookie(PKCE_COOKIE_NAME) {
         pkce_cookie
@@ -123,110 +55,19 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
         return HttpResponse::Unauthorized().body("Missing state cookie");
     };
 
-    println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code, response_query.state);
+    println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code(), response_query.state());
 
-    let mut token_request = oauth_config.token_request();
-    token_request.set_code(&response_query.code);
-    token_request.set_code_verifier(pkce_cookie.value());
-
-    let body = match token_request.to_urlencoded() {
-        Ok(body) => body,
-        Err(e) => {
-            println!("Error serializing token request: {}", e);
-            return HttpResponse::InternalServerError().body("Error serializing token request");
-        }
-    };
-
-    let mut headers = HeaderMap::new();
-    headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
-    headers.insert("User-Agent", HeaderValue::from_static("OAuth2TestApp"));
-
-    let client = match ClientBuilder::new()
-        .redirect(Policy::none())
-        .default_headers(headers)
-        .build() {
-            Ok(client) => client,
-            Err(e) => {
-                println!("Error building HTTP client: {}", e);
-                return HttpResponse::InternalServerError().body("Error building HTTP client");
-            }
-    };
-
-    let token_response_result = client.post(&oauth_config.token_uri)
-        .body(body)
-        .send()
-        .await;
-
-    let token_response = match token_response_result {
+    let user_info = match provider.token_request(response_query.code(), pkce_cookie.value()).await {
+        Ok(token) => token,
         Err(e) => {
             println!("Error during token request: {}", e);
             return HttpResponse::InternalServerError().body("Error during token request");
-        },
-        Ok(response) => response,
-    };
-    
-
-    println!("Token response status: {}", token_response.status());
-
-    let token_raw_response = match token_response.text().await {
-        Ok(body) => body,
-        Err(e) => {
-            println!("Error parsing token response body: {}", e);
-            return HttpResponse::InternalServerError().body("Error parsing token response body");
         }
     };
-
-    let token = match serde_json::from_str::<TokenResponse>(&token_raw_response) {
-        Ok(token_response) => {
-            token_response.access_token
-        },
-        Err(e) => {
-            println!("Error deserializing token response: {}", e);
-            return HttpResponse::InternalServerError().body("Error deserializing token response");
-        }
-    };
-
-    let user_response_result = client.get(&oauth_config.user_info_endpoint)
-        .header("Authorization", format!("Bearer {}", token))
-        .send()
-        .await;
-
-    let user_response = match user_response_result {
-        Err(e) => {
-            println!("Error during user info request: {}", e);
-            return HttpResponse::InternalServerError().body("Error during user info request");
-        },
-        Ok(response) => response,
-    };
-
-    println!("Response status from user info request: {}", user_response.status());
-
-    user_response.headers().iter().for_each(|(k, v)| {
-        println!("Header: {}: {:?}", k, v);
-    });
-    if user_response.status().as_u16() >= 400 {
-        return HttpResponse::InternalServerError().body("Couldn't fetch user info data.");
-    }
-
-    let raw_user_info: HashMap<String, serde_json::Value> = match user_response.json().await {
-        Ok(json) => json,
-        Err(e) => {
-            println!("Error parsing user info response: {}", e);
-            return HttpResponse::InternalServerError().body("Error parsing user info response");
-        }
-    };
-
-    println!("raw_user_info:\n{:?}", raw_user_info);
-    
-    let user_info: HashMap<String, String> = raw_user_info.into_iter()
-    .map(|(k, v)| (k, v.to_string()))
-    .collect();
 
     println!("user_info:\n{:?}", user_info);
 
-    let user = user_info.get(&oauth_config.oauth_user_name)
-        .map(|s| s.as_str())
-        .unwrap_or("unknown user");
+    let user = provider.user_name(&user_info).unwrap_or("unknown user".to_string());
 
     invalidate_cookie(&mut pkce_cookie);
     invalidate_cookie(&mut state_cookie);
@@ -242,7 +83,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, oaut
 }
 
 #[get("/login/github")]
-async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
+async fn login_github(provider: Data<OAuthProvider>) -> impl Responder {
     println!("GET /login/github");
     let state = match generate_random_code() {
         Ok(code) => code,
@@ -261,24 +102,9 @@ async fn login_github(oauth_config: Data<OAuthConfig>) -> impl Responder {
             return HttpResponse::InternalServerError().body("Error generating PKCE code verifier");
         }
     };
-
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(pkce.as_bytes());
-    let hash_bytes = hasher.finalize();
-    let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);
-
     let pkce_cookie = create_cookie(PKCE_COOKIE_NAME, &pkce);
 
-    let redirect_uri = urlencoding::encode(&oauth_config.redirect_uri);
-    
-    let auth_redirect = format!(
-        "{}?client_id={}&redirect_uri={}&scope=read:user&state={}&code_challenge_method=S256&code_challenge={}",
-        oauth_config.auth_uri,
-        oauth_config.client_id,
-        redirect_uri,
-        state,
-        pkce_hash_b64
-    );
+    let auth_redirect = provider.build_authentication_url(&state, &pkce);
 
     HttpResponse::TemporaryRedirect()
         .append_header(("Location", auth_redirect))
@@ -309,21 +135,14 @@ async fn login() -> Markup {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {    
     dotenv::dotenv().ok();
-    let client_id = env::var("client_id").expect("client_id must be set");
-    let client_secret = env::var("client_secret").expect("client_secret must be set");
-    let oauth_user_name = env::var("oauth_user_name").expect("oauth_user_name must be set");
-    let redirect_uri = env::var("redirect_uri").expect("redirect_uri must be set");
-    let auth_uri = env::var("auth_uri").expect("auth_uri must be set");
-    let token_uri = env::var("token_uri").expect("token_uri must be set");
-    let userinfo_endpoint = env::var("userinfo_endpoint").expect("userinfo_endpoint must be set");
-    let config: Data<OAuthConfig>= Data::new(OAuthConfig::new(client_id, client_secret, oauth_user_name, redirect_uri, auth_uri, token_uri, userinfo_endpoint));
-
+    let provider = Data::new(OAuthProvider::new(OAuthConfig::from_env().expect("OAuth 2.0 variables missing or invalid")));
+    
     HttpServer::new(move || {
             App::new()
                 .service(login)
                 .service(login_github)
                 .service(sso_github)
-                .app_data(config.clone())
+                .app_data(provider.clone())
             
         })
         .workers(1)
