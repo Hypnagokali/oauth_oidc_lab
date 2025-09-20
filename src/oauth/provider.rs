@@ -142,7 +142,7 @@ impl OAuthProvider {
         let auth_header_value = format!("Basic {}", BASE64_STANDARD.encode(format!("{}:{}", self.config.client_id, self.config.client_secret)));
 
         let mut headers = HeaderMap::new();
-        headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
+        headers.insert("Accept", HeaderValue::from_static("application/json"));
         headers.insert("User-Agent", HeaderValue::from_static("OAuth2TestApp"));
 
         let client = match ClientBuilder::new()
