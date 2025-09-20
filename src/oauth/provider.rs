@@ -1,14 +1,13 @@
 use std::{collections::HashMap, env};
 
-use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
 use reqwest::{header::{HeaderMap, HeaderValue}, redirect::Policy, ClientBuilder};
 use serde::Serialize;
 use sha2::Digest;
 
 #[derive(Serialize)]
 struct TokenRequest {
-    client_id: String,
-    client_secret: String,
+    grant_type: String,
     code: String,
     redirect_uri: String,
     code_verifier: String,
@@ -89,8 +88,7 @@ impl OAuthConfig {
 
     fn token_request(&self) -> TokenRequest {
         TokenRequest {
-            client_id: self.client_id.clone(),
-            client_secret: self.client_secret.clone(),
+            grant_type: "authorization_code".to_string(),
             code: "".to_string(),
             redirect_uri: self.redirect_uri.clone(),
             code_verifier: "".to_string(),
@@ -141,6 +139,8 @@ impl OAuthProvider {
             }
         };
 
+        let auth_header_value = format!("Basic {}", BASE64_STANDARD.encode(format!("{}:{}", self.config.client_id, self.config.client_secret)));
+
         let mut headers = HeaderMap::new();
         headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
         headers.insert("User-Agent", HeaderValue::from_static("OAuth2TestApp"));
@@ -156,7 +156,9 @@ impl OAuthProvider {
                 }
         };
 
+
         let token_response_result = client.post(&self.config.token_uri)
+            .header("Authorization", auth_header_value)
             .body(body)
             .send()
             .await;
