@@ -15,6 +15,12 @@ fn invalidate_cookie(cookie: &mut Cookie<'_>) {
     cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(1));
 }
 
+fn invalidate_cookies(mut cookies: Vec<&mut Cookie<'_>>) {
+    for cookie in cookies.iter_mut() {
+        invalidate_cookie(cookie);
+    }
+}
+
 fn create_cookie(name: &str, value: &str) -> Cookie<'static> {
     let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
     cookie.set_max_age(Duration::minutes(15));
@@ -32,7 +38,7 @@ fn generate_random_code() -> Result<String, OsError> {
     Ok(random_code)
 }
 
-#[get("/sso-github")]
+#[get("/login/oauth2/code/github")]
 async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, provider: Data<OAuthProvider>) -> impl Responder {
     let state_from_provider = response_query.state();
 
@@ -45,8 +51,9 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
     // TODO:
     // Redirect back to /login/github
     // max tries: about 3x and then return 401:
-    let mut state_cookie = if let Some(state_cookie) = req.cookie(STATE_COOKIE_NAME) {
+    let mut state_cookie = if let Some(mut state_cookie) = req.cookie(STATE_COOKIE_NAME) {
         if state_cookie.value() != state_from_provider {
+            invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
             return HttpResponse::Unauthorized().body("Invalid state parameter");
         }
 
@@ -61,6 +68,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
         Ok(token) => token,
         Err(e) => {
             println!("Error during token request: {}", e);
+            invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
             return HttpResponse::InternalServerError().body("Error during token request");
         }
     };
@@ -69,8 +77,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
 
     let user = provider.user_name(&user_info).unwrap_or("unknown user".to_string());
 
-    invalidate_cookie(&mut pkce_cookie);
-    invalidate_cookie(&mut state_cookie);
+    invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
 
     // TODO:
     // - read name from user info
@@ -82,9 +89,9 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
         .body(format!("You are logged in. Hi {}", user))
 }
 
-#[get("/login/github")]
+#[get("/login/oauth2/auth/github")]
 async fn login_github(provider: Data<OAuthProvider>) -> impl Responder {
-    println!("GET /login/github");
+    println!("GET /login/oauth2/auth/github");
     let state = match generate_random_code() {
         Ok(code) => code,
         Err(e) => {
@@ -122,7 +129,7 @@ async fn login() -> Markup {
                 h1 { "Login page" }
                 p { "This is a dummy site, nothing works at the moment" }
                 div {
-                    a href="/login/github" { "Login with GitHub" }
+                    a href="/login/oauth2/auth/github" { "Login with GitHub" }
                 }
                 div {
                     a href="#" { "Login with Google" }
