@@ -11,8 +11,15 @@ const PKCE_COOKIE_NAME: &str = "pkce";
 const STATE_COOKIE_NAME: &str = "state";
 
 
+fn base_cookie_attributes(cookie: &mut Cookie<'_>) {
+    cookie.set_http_only(true);
+    cookie.set_path("/");
+    cookie.set_same_site(SameSite::Lax);
+}
+
 fn invalidate_cookie(cookie: &mut Cookie<'_>) {
     cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(1));
+    base_cookie_attributes(cookie);
 }
 
 fn invalidate_cookies(mut cookies: Vec<&mut Cookie<'_>>) {
@@ -24,9 +31,7 @@ fn invalidate_cookies(mut cookies: Vec<&mut Cookie<'_>>) {
 fn create_cookie(name: &str, value: &str) -> Cookie<'static> {
     let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
     cookie.set_max_age(Duration::minutes(15));
-    cookie.set_http_only(true);
-    cookie.set_path("/");
-    cookie.set_same_site(SameSite::Lax);
+    base_cookie_attributes(&mut cookie);
     cookie
 }
 
@@ -78,6 +83,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
     let user = provider.user_name(&user_info).unwrap_or("unknown user".to_string());
 
     invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
+    println!("After invalidation: pkce: {:?}, state: {:?}", pkce_cookie, state_cookie);
 
     // TODO:
     // - read name from user info
