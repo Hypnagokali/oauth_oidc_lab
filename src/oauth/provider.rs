@@ -233,6 +233,7 @@ impl OAuthProvider {
 
         let token_response_result = client.post(&self.config.token_uri)
             .header("Authorization", auth_header_value)
+            .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
             .send()
             .await;
