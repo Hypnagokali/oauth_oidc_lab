@@ -1,9 +1,14 @@
-use std::{collections::HashMap, env};
+use std::{collections::HashMap, env::{self, VarError}, error::Error};
 
 use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
 use reqwest::{header::{HeaderMap, HeaderValue}, redirect::Policy, ClientBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::Digest;
+
+use crate::oauth::oidc::IssuerMetadata;
+
+
+const OIDC_NAME_FIELDS: [&str; 3] = ["preferred_username", "name", "email"];
 
 #[derive(Serialize)]
 struct TokenRequest {
@@ -27,12 +32,12 @@ impl TokenRequest {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 pub struct TokenResponse {
     access_token: String,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 pub struct OAuthResponse {
     code: String,
     state: String,
@@ -48,41 +53,96 @@ impl OAuthResponse {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("OAuthConfig error: {0}")]
+pub struct OAuthConfigError(String);
+
+impl From<VarError> for OAuthConfigError {
+    fn from(err: VarError) -> Self {
+        OAuthConfigError(err.to_string())
+    }
+}
+
+#[derive(Debug)]
 pub struct OAuthConfig {
     // ToDo: scope needed
     // ToDo: pkce and method needed
     client_id: String,
     client_secret: String,
-    oauth_user_name: String,
+    oauth_user_name: Option<String>,
     redirect_uri: String,
     auth_uri: String,
     token_uri: String,
-    user_info_endpoint: String,
+    userinfo_endpoint: String,
+    scopes: Vec<String>,
 }
 
 
 impl OAuthConfig {
-    pub fn from_env() -> Result<Self, std::env::VarError> {
+    pub async fn from_env() -> Result<Self, OAuthConfigError> {
         let client_id = env::var("client_id")?;
         let client_secret = env::var("client_secret")?;
+        let scopes_from_env = env::var("scopes").unwrap_or("".into());
+
+        let scopes: Vec<String> = scopes_from_env.split(',').map(|s| s.trim().to_lowercase().to_string()).collect();
+    
+        if scopes_from_env.contains("openid") {
+            match env::var("issuer_url") {
+                Ok(issuer_url) => {
+                    let meta_data = IssuerMetadata::from_issuer(&issuer_url).await.expect("Failed to fetch OIDC metadata");
+
+                    let conf = OAuthConfig::new(
+                        client_id,
+                        client_secret,
+                        None,
+                        env::var("redirect_uri")?,
+                        meta_data.authorization_endpoint().to_string(),
+                        meta_data.token_endpoint().to_string(),
+                        meta_data.userinfo_endpoint().to_string(),
+                        scopes,
+                    );
+
+                    println!("{conf:?}");
+                    return Ok(conf);
+                }
+                Err(_) => {
+                    println!("Missing issuer_url. No provider discovery possible. OAuthConfig will now use manual vars instead.");
+                }
+            }
+        }
+
         let oauth_user_name = env::var("oauth_user_name")?;
         let redirect_uri = env::var("redirect_uri")?;
         let auth_uri = env::var("auth_uri")?;
         let token_uri = env::var("token_uri")?;
         let user_info_endpoint = env::var("userinfo_endpoint")?;
 
-        Ok(OAuthConfig::new(client_id, client_secret, oauth_user_name, redirect_uri, auth_uri, token_uri, user_info_endpoint))
+        Ok(OAuthConfig::new(client_id, client_secret, Some(oauth_user_name), redirect_uri, auth_uri, token_uri, user_info_endpoint, scopes))
     }
 
-    pub fn new(client_id: String, client_secret: String, oauth_user_name: String, redirect_uri: String, auth_uri: String, token_uri: String, user_info_endpoint: String) -> Self {
-        OAuthConfig {
+    pub fn is_openid(&self) -> bool {
+        self.scopes.iter().any(|s| s == "openid")
+    }
+
+    pub fn new(
+        client_id: String,
+        client_secret: String,
+        oauth_user_name: Option<String>,
+        redirect_uri: String,
+        auth_uri: String,
+        token_uri: String,
+        userinfo_endpoint: String,
+        scopes: Vec<String>,
+    ) -> Self {
+        Self {
             client_id,
             client_secret,
             oauth_user_name,
             redirect_uri,
             auth_uri,
             token_uri,
-            user_info_endpoint,
+            userinfo_endpoint,
+            scopes,
         }
     }
 
@@ -109,6 +169,15 @@ impl OAuthProvider {
         OAuthProvider { config }
     }
 
+    pub fn is_openid(&self) -> bool {
+        self.config.is_openid()
+    }
+
+    pub fn build_authentication_url_with_nonce(&self, state: &str, pkce_challenge: &str, nonce: &str) -> String {
+        let base_url = self.build_authentication_url(state, pkce_challenge);
+        format!("{}&nonce={}", base_url, nonce)
+    }
+
     pub fn build_authentication_url(&self, state: &str, pkce_challenge: &str) -> String {
         let mut hasher = sha2::Sha256::new();
         hasher.update(pkce_challenge.as_bytes());
@@ -116,11 +185,17 @@ impl OAuthProvider {
         let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);   
 
         let redirect_uri = urlencoding::encode(&self.config.redirect_uri);
+
+        // TODO: handle empty scopes
+        let scope = self.config.scopes.join(" ");
+
+        // Hardcoded response_type=code and code_challenge_method=S256 for now
         format!(
-            "{}?client_id={}&redirect_uri={}&scope=read:user&state={}&code_challenge_method=S256&code_challenge={}",
+            "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge_method=S256&code_challenge={}",
             self.config.auth_uri,
             self.config.client_id,
             redirect_uri,
+            scope,
             state,
             pkce_hash_b64
         )
@@ -156,7 +231,6 @@ impl OAuthProvider {
                 }
         };
 
-
         let token_response_result = client.post(&self.config.token_uri)
             .header("Authorization", auth_header_value)
             .body(body)
@@ -173,6 +247,7 @@ impl OAuthProvider {
         
 
         println!("Token response status: {}", token_response.status());
+        let status = token_response.status();
 
         let token_raw_response = match token_response.text().await {
             Ok(body) => body,
@@ -181,6 +256,10 @@ impl OAuthProvider {
                 return Err(TokenRequestError(format!("Error parsing token response body: {}", e)));
             }
         };
+
+        if status.as_u16() >= 400 {
+            return Err(TokenRequestError(format!("Token request failed: {} - {}", status, token_raw_response)));
+        }
 
         let token = match serde_json::from_str::<TokenResponse>(&token_raw_response) {
             Ok(token_response) => {
@@ -192,7 +271,7 @@ impl OAuthProvider {
             }
         };
 
-        let user_response_result = client.get(&self.config.user_info_endpoint)
+        let user_response_result = client.get(&self.config.userinfo_endpoint)
             .header("Authorization", format!("Bearer {}", token))
             .send()
             .await;
@@ -210,6 +289,7 @@ impl OAuthProvider {
         user_response.headers().iter().for_each(|(k, v)| {
             println!("Header: {}: {:?}", k, v);
         });
+
         if user_response.status().as_u16() >= 400 {
             return Err(TokenRequestError(format!("Couldn't fetch user info data: {}", user_response.status())));
         }
@@ -232,8 +312,19 @@ impl OAuthProvider {
     }
 
     pub fn user_name(&self, user_info: &HashMap<String, String>) -> Option<String> {
+        let username_field = match &self.config.oauth_user_name {
+            Some(field) => field,
+            None => {
+                if self.config.is_openid() {
+                    OIDC_NAME_FIELDS.iter().find(|&&f| user_info.contains_key(f)).unwrap_or(&"sub")
+                } else {
+                    "login"
+                }
+            },
+        };
+        
         // avoiding allocation here?
-        user_info.get(&self.config.oauth_user_name).cloned()
+        user_info.get(username_field).cloned()
     }
 }
 

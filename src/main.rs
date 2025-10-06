@@ -8,6 +8,7 @@ use crate::oauth::provider::{OAuthConfig, OAuthResponse, OAuthProvider};
 pub mod oauth;
 
 const PKCE_COOKIE_NAME: &str = "pkce";
+const NONCE_COOKIE_NAME: &str = "nonce";
 const STATE_COOKIE_NAME: &str = "state";
 
 
@@ -43,7 +44,7 @@ fn generate_random_code() -> Result<String, OsError> {
     Ok(random_code)
 }
 
-#[get("/login/oauth2/code/github")]
+#[get("/login/oauth2/code")]
 async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, provider: Data<OAuthProvider>) -> impl Responder {
     let state_from_provider = response_query.state();
 
@@ -85,19 +86,15 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
     invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
     println!("After invalidation: pkce: {:?}, state: {:?}", pkce_cookie, state_cookie);
 
-    // TODO:
-    // - read name from user info
-    // - create session for user
-    // - store access token
     HttpResponse::Ok()
-        .cookie(pkce_cookie)
-        .cookie(state_cookie)
+        .cookie(pkce_cookie) // remove cookie
+        .cookie(state_cookie) // remove cookie
         .body(format!("You are logged in. Hi {}", user))
 }
 
-#[get("/login/oauth2/auth/github")]
+#[get("/login/oauth2/auth")]
 async fn login_github(provider: Data<OAuthProvider>) -> impl Responder {
-    println!("GET /login/oauth2/auth/github");
+    println!("GET /login/oauth2/auth");
     let state = match generate_random_code() {
         Ok(code) => code,
         Err(e) => {
@@ -117,14 +114,37 @@ async fn login_github(provider: Data<OAuthProvider>) -> impl Responder {
     };
     let pkce_cookie = create_cookie(PKCE_COOKIE_NAME, &pkce);
 
-    let auth_redirect = provider.build_authentication_url(&state, &pkce);
+    if provider.is_openid() {
+        let nonce = match generate_random_code() {
+            Ok(code) => code,
+            Err(e) => {
+                println!("Error generating nonce: {}", e);
+                return HttpResponse::InternalServerError().body("Error generating nonce");
+            }
+        };
+        let nonce_cookie = create_cookie(NONCE_COOKIE_NAME, &nonce);
 
-    HttpResponse::TemporaryRedirect()
-        .append_header(("Location", auth_redirect))
-        .append_header(("Cache-Control", "no-store"))
-        .cookie(state_cookie)
-        .cookie(pkce_cookie)
-        .finish()
+        let auth_redirect = provider.build_authentication_url_with_nonce(&state, &pkce, &nonce);
+
+        HttpResponse::TemporaryRedirect()
+            .append_header(("Location", auth_redirect))
+            .append_header(("Cache-Control", "no-store"))
+            .cookie(state_cookie)
+            .cookie(pkce_cookie)
+            .cookie(nonce_cookie)
+            .finish()
+
+    } else {
+        let auth_redirect = provider.build_authentication_url(&state, &pkce);
+
+        HttpResponse::TemporaryRedirect()
+            .append_header(("Location", auth_redirect))
+            .append_header(("Cache-Control", "no-store"))
+            .cookie(state_cookie)
+            .cookie(pkce_cookie)
+            .finish()
+    }
+    
 }
 
 #[get("/")]
@@ -138,7 +158,7 @@ async fn login() -> Markup {
                     a href="/login/oauth2/auth/github" { "Login with GitHub" }
                 }
                 div {
-                    a href="#" { "Login with Google" }
+                    a href="/login/oauth2/auth" { "Login with Keycloak" }
                 }
             }
         }
@@ -148,8 +168,8 @@ async fn login() -> Markup {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {    
     dotenv::dotenv().ok();
-    let provider = Data::new(OAuthProvider::new(OAuthConfig::from_env().expect("OAuth 2.0 variables missing or invalid")));
-    
+    let provider = Data::new(OAuthProvider::new(OAuthConfig::from_env().await.expect("OAuth 2.0 variables missing or invalid")));
+
     HttpServer::new(move || {
             App::new()
                 .service(login)
