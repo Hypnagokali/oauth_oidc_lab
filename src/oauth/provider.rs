@@ -35,6 +35,12 @@ impl TokenRequest {
 #[derive(Deserialize)]
 pub struct TokenResponse {
     access_token: String,
+    token_type: String,
+    id_token: Option<String>,
+    expires_in: Option<u64>,
+    refresh_expires_in: Option<u64>,
+    refresh_token: Option<String>,
+    scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -201,7 +207,7 @@ impl OAuthProvider {
         )
     }
 
-    pub async fn token_request(&self, code: &str, pkce: &str) -> Result<HashMap<String, String>, TokenRequestError> {
+    pub async fn code_to_token_request(&self, code: &str, pkce: &str) -> Result<HashMap<String, String>, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
         token_request.set_code_verifier(pkce);
@@ -257,6 +263,8 @@ impl OAuthProvider {
                 return Err(TokenRequestError(format!("Error parsing token response body: {}", e)));
             }
         };
+
+        println!("raw token response:\n{}", token_raw_response);
 
         if status.as_u16() >= 400 {
             return Err(TokenRequestError(format!("Token request failed: {} - {}", status, token_raw_response)));
@@ -324,7 +332,6 @@ impl OAuthProvider {
             },
         };
         
-        // avoiding allocation here?
         user_info.get(username_field).cloned()
     }
 }

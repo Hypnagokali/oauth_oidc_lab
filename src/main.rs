@@ -70,7 +70,7 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
 
     println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code(), response_query.state());
 
-    let user_info = match provider.token_request(response_query.code(), pkce_cookie.value()).await {
+    let user_info = match provider.code_to_token_request(response_query.code(), pkce_cookie.value()).await {
         Ok(token) => token,
         Err(e) => {
             println!("Error during token request: {}", e);
