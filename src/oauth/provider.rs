@@ -71,7 +71,6 @@ impl From<VarError> for OAuthConfigError {
 
 #[derive(Debug)]
 pub struct OAuthConfig {
-    // ToDo: scope needed
     // ToDo: pkce and method needed
     client_id: String,
     client_secret: String,
@@ -128,6 +127,10 @@ impl OAuthConfig {
 
     pub fn is_openid(&self) -> bool {
         self.scopes.iter().any(|s| s == "openid")
+    }
+
+    pub fn client_id(&self) -> &str {
+        &self.client_id
     }
 
     pub fn new(
