@@ -2,14 +2,26 @@ use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, ge
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
+use serde::Deserialize;
 
-use crate::oauth::provider::{OAuthConfig, OAuthResponse, OAuthProvider};
+use crate::oauth::{provider::{OAuthConfig, OAuthProvider, OAuthResponse}, userinfo::UserInfoAttributes};
 
 pub mod oauth;
 
 const PKCE_COOKIE_NAME: &str = "pkce";
 const NONCE_COOKIE_NAME: &str = "nonce";
 const STATE_COOKIE_NAME: &str = "state";
+
+#[derive(Deserialize)]
+pub struct KcTestUserInfo {
+    name: String,
+}
+
+impl UserInfoAttributes for KcTestUserInfo {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+}
 
 
 fn base_cookie_attributes(cookie: &mut Cookie<'_>) {
@@ -70,8 +82,8 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
 
     println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code(), response_query.state());
 
-    let user_info = match provider.code_to_token_request(response_query.code(), pkce_cookie.value()).await {
-        Ok(token) => token,
+    let user_info: KcTestUserInfo = match provider.code_to_token_request(response_query.code(), pkce_cookie.value()).await {
+        Ok(inf) => inf,
         Err(e) => {
             println!("Error during token request: {}", e);
             invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
@@ -79,17 +91,13 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
         }
     };
 
-    println!("user_info:\n{:?}", user_info);
-
-    let user = provider.user_name(&user_info).unwrap_or("unknown user".to_string());
-
     invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
     println!("After invalidation: pkce: {:?}, state: {:?}", pkce_cookie, state_cookie);
 
     HttpResponse::Ok()
         .cookie(pkce_cookie) // remove cookie
         .cookie(state_cookie) // remove cookie
-        .body(format!("You are logged in. Hi {}", user))
+        .body(format!("You are logged in. Hi {}", user_info.name()))
 }
 
 #[get("/login/oauth2/auth")]

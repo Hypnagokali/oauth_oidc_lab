@@ -2,10 +2,10 @@ use std::{collections::HashMap, env::{self, VarError}, error::Error};
 
 use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
 use reqwest::{header::{HeaderMap, HeaderValue}, redirect::Policy, ClientBuilder};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::oauth::oidc::IssuerMetadata;
+use crate::oauth::{oidc::IssuerMetadata, userinfo::UserInfoAttributes};
 
 
 const OIDC_NAME_FIELDS: [&str; 3] = ["preferred_username", "name", "email"];
@@ -210,7 +210,7 @@ impl OAuthProvider {
         )
     }
 
-    pub async fn code_to_token_request(&self, code: &str, pkce: &str) -> Result<HashMap<String, String>, TokenRequestError> {
+    pub async fn code_to_token_request<UA: UserInfoAttributes>(&self, code: &str, pkce: &str) -> Result<UA, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
         token_request.set_code_verifier(pkce);
@@ -306,7 +306,7 @@ impl OAuthProvider {
             return Err(TokenRequestError(format!("Couldn't fetch user info data: {}", user_response.status())));
         }
 
-        let raw_user_info: HashMap<String, serde_json::Value> = match user_response.json().await {
+        let user_info: UA = match user_response.json().await {
             Ok(json) => json,
             Err(e) => {
                 println!("Error parsing user info response: {}", e);
@@ -314,28 +314,7 @@ impl OAuthProvider {
             }
         };
 
-        println!("raw_user_info:\n{:?}", raw_user_info);
-        
-        let user_info: HashMap<String, String> = raw_user_info.into_iter()
-        .map(|(k, v)| (k, v.to_string()))
-        .collect();
-
         Ok(user_info)
-    }
-
-    pub fn user_name(&self, user_info: &HashMap<String, String>) -> Option<String> {
-        let username_field = match &self.config.oauth_user_name {
-            Some(field) => field,
-            None => {
-                if self.config.is_openid() {
-                    OIDC_NAME_FIELDS.iter().find(|&&f| user_info.contains_key(f)).unwrap_or(&"sub")
-                } else {
-                    "login"
-                }
-            },
-        };
-        
-        user_info.get(username_field).cloned()
     }
 }
 
