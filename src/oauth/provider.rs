@@ -18,6 +18,11 @@ struct TokenRequest {
     code_verifier: String,
 }
 
+#[derive(Deserialize)]
+struct IdTokenNonce {
+    nonce: String,
+}
+
 impl TokenRequest {
     pub fn set_code(&mut self, code: &str) {
         self.code = code.to_string();
@@ -210,7 +215,7 @@ impl OAuthProvider {
         )
     }
 
-    pub async fn code_to_token_request<UA: UserInfoAttributes>(&self, code: &str, pkce: &str) -> Result<UA, TokenRequestError> {
+    pub async fn code_to_token_request<UA: UserInfoAttributes>(&self, code: &str, pkce: &str, nonce: &str) -> Result<UA, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
         token_request.set_code_verifier(pkce);
@@ -273,9 +278,9 @@ impl OAuthProvider {
             return Err(TokenRequestError(format!("Token request failed: {} - {}", status, token_raw_response)));
         }
 
-        let token = match serde_json::from_str::<TokenResponse>(&token_raw_response) {
+        let token_response = match serde_json::from_str::<TokenResponse>(&token_raw_response) {
             Ok(token_response) => {
-                token_response.access_token
+                token_response
             },
             Err(e) => {
                 println!("Error deserializing token response: {}", e);
@@ -283,8 +288,34 @@ impl OAuthProvider {
             }
         };
 
+        if self.config.is_openid() {
+            match &token_response.id_token {
+                Some(id_token) => {
+                    let nonce_id_token = match serde_json::from_str::<IdTokenNonce>(id_token) {
+                        Ok(token_response) => {
+                            token_response
+                        },
+                        Err(e) => {
+                            println!("Error deserializing nonce from token: {}", e);
+                            return Err(TokenRequestError(format!("Error deserializing nonce from token: {}", e)));
+                        }
+                    };
+
+                    if nonce_id_token.nonce != nonce {
+                        println!("Nonce mismatch: expected {}, got {}", nonce, nonce_id_token.nonce);
+                        return Err(TokenRequestError("Nonce mismatch".to_string()));
+                    }
+                },
+                None => {
+                    println!("Missing ID token in token response");
+                    return Err(TokenRequestError("Missing ID token in token response".to_string()));
+                }
+            };
+        }
+
+
         let user_response_result = client.get(&self.config.userinfo_endpoint)
-            .header("Authorization", format!("Bearer {}", token))
+            .header("Authorization", format!("Bearer {}", token_response.access_token))
             .send()
             .await;
 

@@ -1,4 +1,4 @@
-use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpServer, Responder};
+use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
@@ -35,10 +35,19 @@ fn invalidate_cookie(cookie: &mut Cookie<'_>) {
     base_cookie_attributes(cookie);
 }
 
-fn invalidate_cookies(mut cookies: Vec<&mut Cookie<'_>>) {
-    for cookie in cookies.iter_mut() {
-        invalidate_cookie(cookie);
+fn invalidated_cookies(res: &mut HttpResponseBuilder) {
+    let cookies = [PKCE_COOKIE_NAME, STATE_COOKIE_NAME, NONCE_COOKIE_NAME];
+    for cookie in cookies.iter() {
+        let mut c = Cookie::new(cookie.to_string(), "".to_string());
+        invalidate_cookie(&mut c);
+        res.cookie(c);
     }
+}
+
+fn unauthorized_error_and_invalidate_cookies(msg: &str) -> HttpResponse {
+    let mut response = HttpResponse::Unauthorized();
+    invalidated_cookies(&mut response);
+    response.body(msg.to_string())
 }
 
 fn create_cookie(name: &str, value: &str) -> Cookie<'static> {
@@ -63,35 +72,38 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
     let mut pkce_cookie = if let Some (pkce_cookie) = req.cookie(PKCE_COOKIE_NAME) {
         pkce_cookie
     } else {
-        return HttpResponse::Unauthorized().body("Missing PKCE cookie");
+        return unauthorized_error_and_invalidate_cookies("Missing PKCE cookie");
     };
 
     // TODO:
-    // Redirect back to /login/github
+    // Redirect back to /login
     // max tries: about 3x and then return 401:
     let mut state_cookie = if let Some(mut state_cookie) = req.cookie(STATE_COOKIE_NAME) {
+        // ToDo: time constant comparison
         if state_cookie.value() != state_from_provider {
-            invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
-            return HttpResponse::Unauthorized().body("Invalid state parameter");
+            return unauthorized_error_and_invalidate_cookies("Invalid state parameter");
         }
-
         state_cookie
     } else {
-        return HttpResponse::Unauthorized().body("Missing state cookie");
+        return unauthorized_error_and_invalidate_cookies("Missing state cookie");
+    };
+
+    let mut nonce_cookie = if let Some(mut nonce_cookie) = req.cookie(NONCE_COOKIE_NAME) {
+        nonce_cookie
+    } else {
+        return unauthorized_error_and_invalidate_cookies("Missing nonce cookie");
     };
 
     println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code(), response_query.state());
 
-    let user_info: KcTestUserInfo = match provider.code_to_token_request(response_query.code(), pkce_cookie.value()).await {
+    let user_info: KcTestUserInfo = match provider.code_to_token_request(response_query.code(), pkce_cookie.value(), nonce_cookie.value()).await {
         Ok(inf) => inf,
         Err(e) => {
             println!("Error during token request: {}", e);
-            invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
-            return HttpResponse::InternalServerError().body("Error during token request");
+            return unauthorized_error_and_invalidate_cookies("Error during token request");
         }
     };
 
-    invalidate_cookies(vec![&mut pkce_cookie, &mut state_cookie]);
     println!("After invalidation: pkce: {:?}, state: {:?}", pkce_cookie, state_cookie);
 
     HttpResponse::Ok()
