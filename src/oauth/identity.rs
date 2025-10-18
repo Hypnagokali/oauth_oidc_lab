@@ -21,11 +21,16 @@ impl From<jsonwebtoken::errors::Error> for UserIdentityError {
 
 impl<C: DeserializeOwned> UserIdentity<C> {
     // TODO: Jwks as parameter (Jwks trait (visitor pattern?))
-    pub fn from_token(id_token: &str, config: &OAuthConfig) -> Result<Self, UserIdentityError> {
+    pub fn from_token(id_token: &str, config: &OAuthConfig, nonce: &str) -> Result<Self, UserIdentityError> {
         let mut validation = Validation::default();
         // only for testing
         validation.insecure_disable_signature_validation();
         validation.set_audience(&[config.client_id()]);
+
+        // TODO: Check nonce !!!
+        // step 1: deserialize to Value
+        // step 2: extract nonce claim and compare with provided nonce
+        // step 3: continue deserialization if nonce matches 
         
         #[cfg(test)]
         {
@@ -81,7 +86,7 @@ mod tests {
             "LV_ootJHTXhI72WXTl7I5pelYj4Pp-UnZr2wNKhNkEND3p1CjPlaAgX-EL9Mxrw4k0OybJneYDejSOx4IEIM7w92y8Tyw18tBQHWzSmrrr1Fu6Eb3M_",
             "WkdsXNIiiVwYjHxMA50YrLX8VcUJODuPIp4QorfWLxXswksOHW2UMpEklx7qNr-ps42MgQ40zTJZR_fOYHn5hPlauwKfqgkGmuHdkFQeftWlXfSgs10Yg"
         );
-        let user_identity = UserIdentity::<MyClaims>::from_token(id_token, &config).unwrap();
+        let user_identity = UserIdentity::<MyClaims>::from_token(id_token, &config, "").unwrap();
         assert_eq!(user_identity.claims.sub, "a5b640fc-42f6-4617-b71b-326edfed18e9");
         assert_eq!(user_identity.claims.name, "Hans Hase");
     }

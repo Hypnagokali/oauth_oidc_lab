@@ -4,7 +4,7 @@ use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
 use serde::Deserialize;
 
-use crate::oauth::{provider::{OAuthConfig, OAuthProvider, OAuthResponse}, userinfo::UserInfoAttributes};
+use crate::oauth::{provider::{OAuthConfig, OAuthProvider, AuthCodeResponse}, userinfo::UserInfoAttributes};
 
 pub mod oauth;
 
@@ -66,7 +66,7 @@ fn generate_random_code() -> Result<String, OsError> {
 }
 
 #[get("/login/oauth2/code")]
-async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, provider: Data<OAuthProvider>) -> impl Responder {
+async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, provider: Data<OAuthProvider>) -> impl Responder {
     let state_from_provider = response_query.state();
 
     let mut pkce_cookie = if let Some (pkce_cookie) = req.cookie(PKCE_COOKIE_NAME) {
@@ -96,19 +96,36 @@ async fn sso_github(req: HttpRequest, response_query: Query<OAuthResponse>, prov
 
     println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code(), response_query.state());
 
-    let user_info: KcTestUserInfo = match provider.code_to_token_request(response_query.code(), pkce_cookie.value(), nonce_cookie.value()).await {
-        Ok(inf) => inf,
+    let token_provider = match provider.code_to_token_request(
+        response_query.code(), 
+        pkce_cookie.value(),
+        Option::Some(nonce_cookie.value())
+    ).await {
+        Ok(prov) => prov,
         Err(e) => {
             println!("Error during token request: {}", e);
             return unauthorized_error_and_invalidate_cookies("Error during token request");
         }
     };
 
+    let user_info: KcTestUserInfo = match token_provider.user_info().await {
+        Ok(info) => info,
+        Err(e) => {
+            println!("Error fetching user info: {}", e);
+            return unauthorized_error_and_invalidate_cookies("Error fetching user info");
+        }
+    };
+
+    invalidate_cookie(&mut pkce_cookie);
+    invalidate_cookie(&mut state_cookie);
+    invalidate_cookie(&mut nonce_cookie);
     println!("After invalidation: pkce: {:?}, state: {:?}", pkce_cookie, state_cookie);
 
     HttpResponse::Ok()
         .cookie(pkce_cookie) // remove cookie
         .cookie(state_cookie) // remove cookie
+        .cookie(nonce_cookie) // remove cookie
+        // TODO: add cache control headers
         .body(format!("You are logged in. Hi {}", user_info.name()))
 }
 

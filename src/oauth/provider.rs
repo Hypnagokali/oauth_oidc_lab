@@ -1,14 +1,12 @@
-use std::{collections::HashMap, env::{self, VarError}, error::Error};
+use std::{env::{self, VarError}, sync::Arc};
 
 use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
 use reqwest::{header::{HeaderMap, HeaderValue}, redirect::Policy, ClientBuilder};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::oauth::{oidc::IssuerMetadata, userinfo::UserInfoAttributes};
+use crate::oauth::{identity::{UserIdentity, UserIdentityError}, oidc::IssuerMetadata, userinfo::UserInfoAttributes};
 
-
-const OIDC_NAME_FIELDS: [&str; 3] = ["preferred_username", "name", "email"];
 
 #[derive(Serialize)]
 struct TokenRequest {
@@ -16,11 +14,6 @@ struct TokenRequest {
     code: String,
     redirect_uri: String,
     code_verifier: String,
-}
-
-#[derive(Deserialize)]
-struct IdTokenNonce {
-    nonce: String,
 }
 
 impl TokenRequest {
@@ -38,7 +31,7 @@ impl TokenRequest {
 }
 
 #[derive(Deserialize)]
-pub struct TokenResponse {
+struct TokenResponse {
     access_token: String,
     token_type: String,
     id_token: Option<String>,
@@ -48,13 +41,125 @@ pub struct TokenResponse {
     scope: Option<String>,
 }
 
+pub struct AccessToken {
+    raw_token: String,
+    token_type: String,
+    expires_in: Option<u64>,
+}
+
+pub struct RefreshToken {
+    raw_token: String,
+    expires_in: Option<u64>,
+}
+
+pub struct IdToken {
+    raw_token: String,
+    nonce: String,
+}
+
+pub struct TokenProvider {
+    access_token: AccessToken,
+    id_token: Option<IdToken>,
+    refresh_token: Option<RefreshToken>,
+    config: Arc<OAuthConfig>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Token validation error: {0}")]
+pub struct TokenValidationError(String);
+
+impl From<UserIdentityError> for TokenValidationError {
+    fn from(err: UserIdentityError) -> Self {
+        TokenValidationError(err.to_string())
+    }
+}
+
+impl TokenProvider {
+    pub async fn identity<C: DeserializeOwned>(&self) -> Result<UserIdentity<C>, TokenValidationError> {
+        if let Some(id_token) = &self.id_token {
+            let identity = UserIdentity::from_token(&id_token.raw_token, &*self.config, &id_token.nonce)?;
+            Ok(identity)
+        } else {
+            Err(TokenValidationError("No ID token available for identity extraction".to_string()))
+        }
+    }
+
+    // TODO: Replace Error type
+    pub async fn user_info<UA: UserInfoAttributes>(&self) -> Result<UA, TokenRequestError> {
+        let client = create_http_client()?;
+
+        let user_response_result = client.get(&self.config.userinfo_endpoint)
+            .header("Authorization", format!("{} {}", self.access_token.token_type, self.access_token.raw_token))
+            .send()
+            .await;
+
+        let user_response = match user_response_result {
+            Err(e) => {
+                println!("Error during user info request: {}", e);
+                return Err(TokenRequestError(format!("Error during user info request: {}", e)));
+            },
+            Ok(response) => response,
+        };
+
+        // TODO: use logging crate here
+        println!("Response status from user info request: {}", user_response.status());
+
+        if user_response.status().as_u16() >= 400 {
+            return Err(TokenRequestError(format!("Couldn't fetch user info data: {}", user_response.status())));
+        }
+
+        match user_response.json().await {
+            Ok(json) => return Ok(json),
+            Err(e) => {
+                println!("Error parsing user info response: {}", e);
+                return Err(TokenRequestError(format!("Error parsing user info response: {}", e)));
+            }
+        };
+    }
+}
+
+impl From<(Arc<OAuthConfig>, TokenResponse, Option<&str>)> for TokenProvider {
+    fn from((config, response, nonce): (Arc<OAuthConfig>, TokenResponse, Option<&str>)) -> Self {
+        let access_token = AccessToken {
+            raw_token: response.access_token,
+            token_type: response.token_type,
+            expires_in: response.expires_in,
+        };
+
+        let id_token = match response.id_token {
+            Some(id_token_str) => Some(IdToken {
+                raw_token: id_token_str,
+                // set nonce to an empty string if not provided (should be okay for now)
+                nonce: nonce.unwrap_or("").to_string(),
+            }),
+            None => None,
+        };
+
+        let refresh_token = match response.refresh_token {
+            Some(refresh_token_str) => Some(RefreshToken {
+                raw_token: refresh_token_str,
+                expires_in: response.refresh_expires_in,
+            }),
+            None => None,
+        };
+
+        TokenProvider {
+            access_token,
+            id_token,
+            refresh_token,
+            config,
+        }
+    }
+}
+
+
 #[derive(Deserialize)]
-pub struct OAuthResponse {
+pub struct AuthCodeResponse {
     code: String,
     state: String,
 }
 
-impl OAuthResponse {
+impl AuthCodeResponse {
     pub fn code(&self) -> &str {
         &self.code
     }
@@ -174,13 +279,21 @@ impl OAuthConfig {
 #[error("Token request error: {0}")]
 pub struct TokenRequestError(String);
 
+impl From<CreateHttpClientError> for TokenRequestError {
+    fn from(err: CreateHttpClientError) -> Self {
+        TokenRequestError(err.to_string())
+    }
+}
+
 pub struct OAuthProvider {
-    config: OAuthConfig,
+    config: Arc<OAuthConfig>,
 }
 
 impl OAuthProvider {
     pub fn new(config: OAuthConfig) -> Self {
-        OAuthProvider { config }
+        OAuthProvider { 
+            config: Arc::new(config),
+        }
     }
 
     pub fn is_openid(&self) -> bool {
@@ -215,7 +328,7 @@ impl OAuthProvider {
         )
     }
 
-    pub async fn code_to_token_request<UA: UserInfoAttributes>(&self, code: &str, pkce: &str, nonce: &str) -> Result<UA, TokenRequestError> {
+    pub async fn code_to_token_request(&self, code: &str, pkce: &str, nonce: Option<&str>) -> Result<TokenProvider, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
         token_request.set_code_verifier(pkce);
@@ -230,20 +343,7 @@ impl OAuthProvider {
 
         let auth_header_value = format!("Basic {}", BASE64_STANDARD.encode(format!("{}:{}", self.config.client_id, self.config.client_secret)));
 
-        let mut headers = HeaderMap::new();
-        headers.insert("Accept", HeaderValue::from_static("application/json"));
-        headers.insert("User-Agent", HeaderValue::from_static("OAuth2TestApp"));
-
-        let client = match ClientBuilder::new()
-            .redirect(Policy::none())
-            .default_headers(headers)
-            .build() {
-                Ok(client) => client,
-                Err(e) => {
-                    println!("Error building HTTP client: {}", e);
-                    return Err(TokenRequestError(format!("Error building HTTP client: {}", e)));
-                }
-        };
+        let client = create_http_client()?;
 
         let token_response_result = client.post(&self.config.token_uri)
             .header("Authorization", auth_header_value)
@@ -288,65 +388,31 @@ impl OAuthProvider {
             }
         };
 
-        if self.config.is_openid() {
-            match &token_response.id_token {
-                Some(id_token) => {
-                    let nonce_id_token = match serde_json::from_str::<IdTokenNonce>(id_token) {
-                        Ok(token_response) => {
-                            token_response
-                        },
-                        Err(e) => {
-                            println!("Error deserializing nonce from token: {}", e);
-                            return Err(TokenRequestError(format!("Error deserializing nonce from token: {}", e)));
-                        }
-                    };
-
-                    if nonce_id_token.nonce != nonce {
-                        println!("Nonce mismatch: expected {}, got {}", nonce, nonce_id_token.nonce);
-                        return Err(TokenRequestError("Nonce mismatch".to_string()));
-                    }
-                },
-                None => {
-                    println!("Missing ID token in token response");
-                    return Err(TokenRequestError("Missing ID token in token response".to_string()));
-                }
-            };
-        }
-
-
-        let user_response_result = client.get(&self.config.userinfo_endpoint)
-            .header("Authorization", format!("Bearer {}", token_response.access_token))
-            .send()
-            .await;
-
-        let user_response = match user_response_result {
-            Err(e) => {
-                println!("Error during user info request: {}", e);
-                return Err(TokenRequestError(format!("Error during user info request: {}", e)));
-            },
-            Ok(response) => response,
-        };
-
-        println!("Response status from user info request: {}", user_response.status());
-
-        user_response.headers().iter().for_each(|(k, v)| {
-            println!("Header: {}: {:?}", k, v);
-        });
-
-        if user_response.status().as_u16() >= 400 {
-            return Err(TokenRequestError(format!("Couldn't fetch user info data: {}", user_response.status())));
-        }
-
-        let user_info: UA = match user_response.json().await {
-            Ok(json) => json,
-            Err(e) => {
-                println!("Error parsing user info response: {}", e);
-                return Err(TokenRequestError(format!("Error parsing user info response: {}", e)));
-            }
-        };
-
-        Ok(user_info)
+        Ok((Arc::clone(&self.config), token_response, nonce).into())
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("HTTP client creation error: {0}")]
+pub struct CreateHttpClientError(String);
+
+fn create_http_client() -> Result<reqwest::Client, CreateHttpClientError> {
+    // TODO: make user agent configurable or change it to something more generic
+    let mut headers = HeaderMap::new();
+        headers.insert("Accept", HeaderValue::from_static("application/json"));
+        headers.insert("User-Agent", HeaderValue::from_static("OAuth2TestApp"));
+
+    let client = match ClientBuilder::new()
+        .redirect(Policy::none())
+        .default_headers(headers)
+        .build() {
+            Ok(client) => client,
+            Err(e) => {
+                println!("Error building HTTP client: {}", e);
+                return Err(CreateHttpClientError(format!("Error building HTTP client: {}", e)));
+            }
+    };
+    Ok(client)
 }
 
     
