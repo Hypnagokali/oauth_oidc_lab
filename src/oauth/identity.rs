@@ -1,5 +1,6 @@
 use jsonwebtoken::{DecodingKey, Validation};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::oauth::provider::OAuthConfig;
@@ -19,25 +20,36 @@ impl From<jsonwebtoken::errors::Error> for UserIdentityError {
     }
 }
 
+impl From<serde_json::Error> for UserIdentityError {
+    fn from(err: serde_json::Error) -> Self {
+        UserIdentityError(err.to_string())
+    }
+}
+
 impl<C: DeserializeOwned> UserIdentity<C> {
     // TODO: Jwks as parameter (Jwks trait (visitor pattern?))
     pub fn from_token(id_token: &str, config: &OAuthConfig, nonce: &str) -> Result<Self, UserIdentityError> {
         let mut validation = Validation::default();
         // only for testing
-        validation.insecure_disable_signature_validation();
+        validation.insecure_disable_signature_validation();        
         validation.set_audience(&[config.client_id()]);
 
-        // TODO: Check nonce !!!
-        // step 1: deserialize to Value
-        // step 2: extract nonce claim and compare with provided nonce
-        // step 3: continue deserialization if nonce matches 
+        let raw: Value = jsonwebtoken::decode::<Value>(id_token, &DecodingKey::from_secret(b""), &validation)?.claims;
+
+        let token_nonce = raw.get("nonce")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| UserIdentityError("Nonce claim missing in ID token".to_string()))?;
+
+        if token_nonce != nonce {
+            return Err(UserIdentityError("Nonce mismatch in ID token".to_string()));
+        }
         
         #[cfg(test)]
         {
             validation.validate_exp = false;
         }
         
-        let claims = jsonwebtoken::decode::<C>(id_token, &DecodingKey::from_secret(b""), &validation)?.claims;
+        let claims = serde_json::from_value::<C>(raw)?;
 
         Ok(UserIdentity {
             id_token: id_token.into(),
