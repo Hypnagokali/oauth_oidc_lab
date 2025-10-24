@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use jsonwebtoken::DecodingKey;
+use jsonwebtoken::{Algorithm, DecodingKey};
 use thiserror::Error;
 
 use crate::oauth::client::{create_http_client, CreateHttpClientError};
@@ -11,6 +11,12 @@ pub struct GetKeyError(String);
 
 impl From<CreateHttpClientError> for GetKeyError {
     fn from(err: CreateHttpClientError) -> Self {
+        GetKeyError(err.to_string())
+    }
+}
+
+impl From<jsonwebtoken::errors::Error> for GetKeyError {
+    fn from(err: jsonwebtoken::errors::Error) -> Self {
         GetKeyError(err.to_string())
     }
 }
@@ -79,7 +85,36 @@ impl KeyFetcher {
     }
 }
 
-pub trait Key {
-    // Tightly coupled to jsonwebtoken DecodingKey for now
-    fn to_decoding_key(&self, key_fetcher: &KeyFetcher) -> impl Future<Output = Result<DecodingKey, jsonwebtoken::errors::Error>>;
+impl Jwk {
+    pub fn decoding_key(self) -> Result<(DecodingKey, Algorithm), GetKeyError> {
+        match self.0.kty.as_str() {
+            "RSA" => {
+                let n = self.0.n.as_ref().ok_or_else(|| {
+                    GetKeyError("Missing 'n' parameter for RSA key".to_string())
+                })?;
+                let e = self.0.e.as_ref().ok_or_else(|| {
+                    GetKeyError("Missing 'e' parameter for RSA key".to_string())
+                })?;
+                let key = DecodingKey::from_rsa_components(n, e)
+                    .map_err(|e| GetKeyError(format!("Error creating RSA decoding key: {}", e)))?;
+                Ok((key, Algorithm::RS256))
+            }
+            "EC" => {
+                let x = self.0.x.as_ref().ok_or_else(|| {
+                    GetKeyError("Missing 'x' parameter for EC key".to_string())
+                })?;
+                let y = self.0.y.as_ref().ok_or_else(|| {
+                    GetKeyError("Missing 'y' parameter for EC key".to_string())
+                })?;
+                let key = DecodingKey::from_ec_components(x, y)
+                    .map_err(|e| GetKeyError(format!("Error creating EC decoding key: {}", e)))?;
+                Ok((key, self.0.alg.parse()?))
+            }
+            _ => Err(GetKeyError(format!(
+                "Unsupported key type: {}",
+                self.0.kty
+            ))),
+        }
+    }
+
 }
