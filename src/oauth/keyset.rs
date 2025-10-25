@@ -28,6 +28,7 @@ pub struct KeyResponse {
     alg: String,
     n: Option<String>,
     e: Option<String>,
+    #[allow(dead_code)]
     crv: Option<String>,
     x: Option<String>,
     y: Option<String>,
@@ -86,7 +87,7 @@ impl KeyFetcher {
 }
 
 impl Jwk {
-    pub fn decoding_key(self) -> Result<(DecodingKey, Algorithm), GetKeyError> {
+    pub fn to_decoding_key(self) -> Result<(DecodingKey, Algorithm), GetKeyError> {
         match self.0.kty.as_str() {
             "RSA" => {
                 let n = self.0.n.as_ref().ok_or_else(|| {
@@ -117,4 +118,44 @@ impl Jwk {
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+    use p256::ecdsa::SigningKey;
+    use rand_core::OsRng;
+
+    #[actix_rt::test]
+    async fn test_ec_jwk_to_decoding_key() {
+        let signing_key = SigningKey::random(&mut OsRng);
+        let verify_key = signing_key.verifying_key();
+        let encoded = verify_key.to_encoded_point(false);
+
+        let x = encoded.x().unwrap();
+        let y = encoded.y().unwrap();
+
+        let x_b64 = BASE64_URL_SAFE_NO_PAD.encode(x);
+        let y_b64 = BASE64_URL_SAFE_NO_PAD.encode(y);
+
+        let key_response = KeyResponse {
+            kid: "test-ec".to_string(),
+            kty: "EC".to_string(),
+            alg: "ES256".to_string(),
+            n: None,
+            e: None,
+            crv: Some("P-256".to_string()),
+            x: Some(x_b64),
+            y: Some(y_b64),
+        };
+
+        let jwk = Jwk(Arc::new(key_response));
+        let res = jwk.to_decoding_key();
+
+        assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
+        
+        let (_, alg) = res.unwrap();
+        assert_eq!(alg, Algorithm::ES256);
+    }
 }
