@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use jsonwebtoken::{Algorithm, DecodingKey};
 use thiserror::Error;
-
 use crate::oauth::client::{create_http_client, CreateHttpClientError};
 
 #[derive(Debug, Error)]
@@ -124,12 +123,32 @@ impl Jwk {
 mod tests {
     use super::*;
     use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
-    use p256::ecdsa::SigningKey;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    use p256::{ecdsa::SigningKey, elliptic_curve::SecretKey, pkcs8::{EncodePrivateKey}, NistP256};
     use rand_core::OsRng;
+    use serde::{Deserialize, Serialize};
 
-    #[actix_rt::test]
-    async fn test_ec_jwk_to_decoding_key() {
-        let signing_key = SigningKey::random(&mut OsRng);
+    #[derive(Debug, Serialize, Deserialize)]
+    struct Claims {
+        sub: String,
+        exp: usize,
+    }
+
+    fn sign_with_pkcs8(pkcs8: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
+        let encoding_key = EncodingKey::from_ec_der(pkcs8);
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some("test-ec".to_string());
+
+        let claims = Claims {
+            sub: "test-sub".to_string(),
+            exp: 0,
+        };
+
+        jsonwebtoken::encode(&header, &claims, &encoding_key)
+    }
+
+    fn create_jwk(secret: SecretKey<NistP256>) -> Jwk {
+        let signing_key: SigningKey = secret.into();
         let verify_key = signing_key.verifying_key();
         let encoded = verify_key.to_encoded_point(false);
 
@@ -150,12 +169,40 @@ mod tests {
             y: Some(y_b64),
         };
 
-        let jwk = Jwk(Arc::new(key_response));
+        Jwk(Arc::new(key_response))
+    }
+
+    fn create_token(secret: SecretKey<NistP256>) -> String {
+        let pkcs8 = secret.to_pkcs8_der().unwrap();
+        let token = sign_with_pkcs8(&pkcs8.to_bytes()).expect("failed to sign token");
+        token
+    }
+
+    #[actix_rt::test]
+    async fn test_ec_jwk_to_decoding_key() {
+        // Arrange:
+        // Secret to sign the token
+        let secret: SecretKey<NistP256> = SecretKey::random(&mut OsRng);
+        // get test token
+        let token = create_token(secret.clone());
+        // get JWK
+        let jwk = create_jwk(secret);
+
+        // Act: Convert JWK to DecodingKey
         let res = jwk.to_decoding_key();
 
+        // Asserts:
         assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
         
-        let (_, alg) = res.unwrap();
+        let (key, alg) = res.unwrap();
         assert_eq!(alg, Algorithm::ES256);
+
+        // verify token with decoding key and algorithm
+        let mut validation = jsonwebtoken::Validation::new(alg);
+        validation.validate_aud = false;
+        validation.validate_exp = false;
+        let token_data = jsonwebtoken::decode::<Claims>(&token, &key, &validation).unwrap();
+        assert_eq!(token_data.claims.sub, "test-sub");
+
     }
 }
