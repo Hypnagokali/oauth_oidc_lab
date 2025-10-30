@@ -126,6 +126,7 @@ mod tests {
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use p256::{ecdsa::SigningKey, elliptic_curve::SecretKey, pkcs8::{EncodePrivateKey}, NistP256};
     use rand_core::OsRng;
+    use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -134,7 +135,7 @@ mod tests {
         exp: usize,
     }
 
-    fn sign_with_pkcs8(pkcs8: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
+    fn sign_with_ec(pkcs8: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
         let encoding_key = EncodingKey::from_ec_der(pkcs8);
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some("test-ec".to_string());
@@ -147,7 +148,20 @@ mod tests {
         jsonwebtoken::encode(&header, &claims, &encoding_key)
     }
 
-    fn create_jwk(secret: SecretKey<NistP256>) -> Jwk {
+    fn create_token_signed_with_rsa(pkcs1: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
+        let encoding_key = EncodingKey::from_rsa_der(pkcs1);
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-rsa".to_string());
+
+        let claims = Claims {
+            sub: "test-sub".to_string(),
+            exp: 0,
+        };
+
+        jsonwebtoken::encode(&header, &claims, &encoding_key)
+    }
+
+    fn create_jwk_ec(secret: SecretKey<NistP256>) -> Jwk {
         let signing_key: SigningKey = secret.into();
         let verify_key = signing_key.verifying_key();
         let encoded = verify_key.to_encoded_point(false);
@@ -172,11 +186,55 @@ mod tests {
         Jwk(Arc::new(key_response))
     }
 
+    fn create_jwk_rsa(pk: RsaPublicKey) -> Jwk {
+        let e = pk.e();
+        let n = pk.n();
+        let e_b64 = BASE64_URL_SAFE_NO_PAD.encode(e.to_bytes_be());
+        let n_b64 = BASE64_URL_SAFE_NO_PAD.encode(n.to_bytes_be());
+        let key_response = KeyResponse {
+            kid: "test-rsa".to_string(),
+            kty: "RSA".to_string(),
+            alg: "RS256".to_string(),
+            n: Some(n_b64),
+            e: Some(e_b64),
+            crv: None,
+            x: None,
+            y: None,
+        };
+
+        Jwk(Arc::new(key_response))
+    }
+
     fn create_token(secret: SecretKey<NistP256>) -> String {
         let pkcs8 = secret.to_pkcs8_der().unwrap();
-        let token = sign_with_pkcs8(&pkcs8.to_bytes()).expect("failed to sign token");
+        let token = sign_with_ec(&pkcs8.to_bytes()).expect("failed to sign token");
         token
     }
+
+    #[actix_rt::test]
+    async fn test_rsa_jwk_to_decoding_key() {
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let token = create_token_signed_with_rsa(private_key.to_pkcs1_der().unwrap().as_bytes()).unwrap();
+        let public_key = RsaPublicKey::from(&private_key);
+        let jwk = create_jwk_rsa(public_key);
+
+        // Act: Convert JWK to DecodingKey
+        let res = jwk.to_decoding_key();
+
+        // Asserts:
+        assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
+        
+        let (key, alg) = res.unwrap();
+        assert_eq!(alg, Algorithm::RS256);
+
+        // verify token with decoding key and algorithm
+        let mut validation = jsonwebtoken::Validation::new(alg);
+        validation.validate_aud = false;
+        validation.validate_exp = false;
+        let token_data = jsonwebtoken::decode::<Claims>(&token, &key, &validation).unwrap();
+        assert_eq!(token_data.claims.sub, "test-sub");
+    }
+
 
     #[actix_rt::test]
     async fn test_ec_jwk_to_decoding_key() {
@@ -186,7 +244,7 @@ mod tests {
         // get test token
         let token = create_token(secret.clone());
         // get JWK
-        let jwk = create_jwk(secret);
+        let jwk = create_jwk_ec(secret);
 
         // Act: Convert JWK to DecodingKey
         let res = jwk.to_decoding_key();
