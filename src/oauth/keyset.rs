@@ -97,7 +97,7 @@ impl Jwk {
                 })?;
                 let key = DecodingKey::from_rsa_components(n, e)
                     .map_err(|e| GetKeyError(format!("Error creating RSA decoding key: {}", e)))?;
-                Ok((key, Algorithm::RS256))
+                Ok((key, self.0.alg.parse()?))
             }
             "EC" => {
                 let x = self.0.x.as_ref().ok_or_else(|| {
@@ -135,23 +135,11 @@ mod tests {
         exp: usize,
     }
 
+    // EC helpers
     fn sign_with_ec(pkcs8: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
         let encoding_key = EncodingKey::from_ec_der(pkcs8);
         let mut header = Header::new(Algorithm::ES256);
         header.kid = Some("test-ec".to_string());
-
-        let claims = Claims {
-            sub: "test-sub".to_string(),
-            exp: 0,
-        };
-
-        jsonwebtoken::encode(&header, &claims, &encoding_key)
-    }
-
-    fn create_token_signed_with_rsa(pkcs1: &[u8]) -> Result<String, jsonwebtoken::errors::Error> {
-        let encoding_key = EncodingKey::from_rsa_der(pkcs1);
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some("test-rsa".to_string());
 
         let claims = Claims {
             sub: "test-sub".to_string(),
@@ -186,7 +174,28 @@ mod tests {
         Jwk(Arc::new(key_response))
     }
 
-    fn create_jwk_rsa(pk: RsaPublicKey) -> Jwk {
+    // RSA helpers
+    fn create_token_signed_with_rsa(pkcs1: &[u8], alg: Algorithm) -> Result<String, jsonwebtoken::errors::Error> {
+        let encoding_key = EncodingKey::from_rsa_der(pkcs1);
+        let mut header = Header::new(alg);
+        header.kid = Some("test-rsa".to_string());
+
+        let claims = Claims {
+            sub: "test-sub".to_string(),
+            exp: 0,
+        };
+
+        jsonwebtoken::encode(&header, &claims, &encoding_key)
+    }
+
+    fn create_jwk_rsa(pk: RsaPublicKey, alg: Algorithm) -> Jwk {
+        let alg_str = match alg {
+            Algorithm::RS256 => "RS256", 
+            Algorithm::RS384 => "RS384",
+            Algorithm::RS512 => "RS512",
+            _ => panic!("Unsupported algorithm for RSA JWK"),
+        };
+
         let e = pk.e();
         let n = pk.n();
         let e_b64 = BASE64_URL_SAFE_NO_PAD.encode(e.to_bytes_be());
@@ -194,7 +203,7 @@ mod tests {
         let key_response = KeyResponse {
             kid: "test-rsa".to_string(),
             kty: "RSA".to_string(),
-            alg: "RS256".to_string(),
+            alg: alg_str.to_string(),
             n: Some(n_b64),
             e: Some(e_b64),
             crv: None,
@@ -212,11 +221,11 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn test_rsa_jwk_to_decoding_key() {
+    async fn test_rsa256_jwk_to_decoding_key() {
         let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
-        let token = create_token_signed_with_rsa(private_key.to_pkcs1_der().unwrap().as_bytes()).unwrap();
+        let token = create_token_signed_with_rsa(private_key.to_pkcs1_der().unwrap().as_bytes(), Algorithm::RS256).unwrap();
         let public_key = RsaPublicKey::from(&private_key);
-        let jwk = create_jwk_rsa(public_key);
+        let jwk = create_jwk_rsa(public_key, Algorithm::RS256);
 
         // Act: Convert JWK to DecodingKey
         let res = jwk.to_decoding_key();
@@ -226,6 +235,30 @@ mod tests {
         
         let (key, alg) = res.unwrap();
         assert_eq!(alg, Algorithm::RS256);
+
+        // verify token with decoding key and algorithm
+        let mut validation = jsonwebtoken::Validation::new(alg);
+        validation.validate_aud = false;
+        validation.validate_exp = false;
+        let token_data = jsonwebtoken::decode::<Claims>(&token, &key, &validation).unwrap();
+        assert_eq!(token_data.claims.sub, "test-sub");
+    }
+
+    #[actix_rt::test]
+    async fn test_rsa512_jwk_to_decoding_key() {
+        let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
+        let token = create_token_signed_with_rsa(private_key.to_pkcs1_der().unwrap().as_bytes(), Algorithm::RS512).unwrap();
+        let public_key = RsaPublicKey::from(&private_key);
+        let jwk = create_jwk_rsa(public_key, Algorithm::RS512);
+
+        // Act: Convert JWK to DecodingKey
+        let res = jwk.to_decoding_key();
+
+        // Asserts:
+        assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
+        
+        let (key, alg) = res.unwrap();
+        assert_eq!(alg, Algorithm::RS512);
 
         // verify token with decoding key and algorithm
         let mut validation = jsonwebtoken::Validation::new(alg);
