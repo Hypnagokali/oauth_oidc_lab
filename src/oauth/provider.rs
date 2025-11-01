@@ -53,6 +53,7 @@ pub struct RefreshToken {
 
 pub struct IdToken {
     raw_token: String,
+    // maybe different name? nonce for verification
     nonce: String,
 }
 

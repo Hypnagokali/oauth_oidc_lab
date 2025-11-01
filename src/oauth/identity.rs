@@ -3,7 +3,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::oauth::provider::OAuthConfig;
+use crate::oauth::{provider::OAuthConfig, util::is_equal_constant_time};
 
 pub struct UserIdentity<C> {
     id_token: String,
@@ -40,7 +40,7 @@ impl<C: DeserializeOwned> UserIdentity<C> {
             .and_then(|v| v.as_str())
             .ok_or_else(|| UserIdentityError("Nonce claim missing in ID token".to_string()))?;
 
-        if token_nonce != nonce {
+        if !is_equal_constant_time(token_nonce, nonce) {
             return Err(UserIdentityError("Nonce mismatch in ID token".to_string()));
         }
         

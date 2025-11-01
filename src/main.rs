@@ -4,7 +4,7 @@ use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
 use serde::Deserialize;
 
-use crate::oauth::{provider::{OAuthConfig, OAuthProvider, AuthCodeResponse}, userinfo::UserInfoAttributes};
+use crate::oauth::{provider::{AuthCodeResponse, OAuthConfig, OAuthProvider}, userinfo::UserInfoAttributes, util::is_equal_constant_time};
 
 pub mod oauth;
 
@@ -22,7 +22,6 @@ impl UserInfoAttributes for KcTestUserInfo {
         self.name.clone()
     }
 }
-
 
 fn base_cookie_attributes(cookie: &mut Cookie<'_>) {
     cookie.set_http_only(true);
@@ -78,9 +77,9 @@ async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, p
     // TODO:
     // Redirect back to /login
     // max tries: about 3x and then return 401:
-    let mut state_cookie = if let Some(mut state_cookie) = req.cookie(STATE_COOKIE_NAME) {
+    let mut state_cookie = if let Some(state_cookie) = req.cookie(STATE_COOKIE_NAME) {
         // ToDo: time constant comparison
-        if state_cookie.value() != state_from_provider {
+        if is_equal_constant_time(state_cookie.value(), state_from_provider) == false {
             return unauthorized_error_and_invalidate_cookies("Invalid state parameter");
         }
         state_cookie
@@ -88,13 +87,11 @@ async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, p
         return unauthorized_error_and_invalidate_cookies("Missing state cookie");
     };
 
-    let mut nonce_cookie = if let Some(mut nonce_cookie) = req.cookie(NONCE_COOKIE_NAME) {
+    let mut nonce_cookie = if let Some(nonce_cookie) = req.cookie(NONCE_COOKIE_NAME) {
         nonce_cookie
     } else {
         return unauthorized_error_and_invalidate_cookies("Missing nonce cookie");
     };
-
-    println!("SSO GitHub endpoint: code: {}, state: {}", response_query.code(), response_query.state());
 
     let token_provider = match provider.code_to_token_request(
         response_query.code(), 
