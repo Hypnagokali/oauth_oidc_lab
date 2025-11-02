@@ -16,7 +16,7 @@ impl From<reqwest::Error> for MetaDataError {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 pub (crate) struct IssuerMetadata {
     authorization_endpoint: String,
     token_endpoint: String,

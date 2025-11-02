@@ -77,7 +77,7 @@ impl From<UserIdentityError> for TokenValidationError {
 impl TokenProvider {
     pub async fn identity<C: DeserializeOwned>(&self) -> Result<UserIdentity<C>, TokenValidationError> {
         if let Some(id_token) = &self.id_token {
-            let identity = UserIdentity::from_token(&id_token.raw_token, &*self.config, &id_token.nonce)?;
+            let identity = UserIdentity::from_token(&id_token.raw_token, &*self.config, &id_token.nonce).await?;
             Ok(identity)
         } else {
             Err(TokenValidationError("No ID token available for identity extraction".to_string()))
@@ -190,6 +190,7 @@ pub struct OAuthConfig {
     token_uri: String,
     userinfo_endpoint: String,
     scopes: Vec<String>,
+    metadata: Option<IssuerMetadata>,
 }
 
 
@@ -204,17 +205,18 @@ impl OAuthConfig {
         if scopes_from_env.contains("openid") {
             match env::var("issuer_url") {
                 Ok(issuer_url) => {
-                    let meta_data = IssuerMetadata::from_issuer(&issuer_url).await.expect("Failed to fetch OIDC metadata");
+                    let metadata = IssuerMetadata::from_issuer(&issuer_url).await.expect("Failed to fetch OIDC metadata");
 
                     let conf = OAuthConfig::new(
                         client_id,
                         client_secret,
                         None,
                         env::var("redirect_uri")?,
-                        meta_data.authorization_endpoint().to_string(),
-                        meta_data.token_endpoint().to_string(),
-                        meta_data.userinfo_endpoint().to_string(),
+                        metadata.authorization_endpoint().to_string(),
+                        metadata.token_endpoint().to_string(),
+                        metadata.userinfo_endpoint().to_string(),
                         scopes,
+                        Some(metadata)
                     );
 
                     println!("{conf:?}");
@@ -232,7 +234,16 @@ impl OAuthConfig {
         let token_uri = env::var("token_uri")?;
         let user_info_endpoint = env::var("userinfo_endpoint")?;
 
-        Ok(OAuthConfig::new(client_id, client_secret, Some(oauth_user_name), redirect_uri, auth_uri, token_uri, user_info_endpoint, scopes))
+        Ok(OAuthConfig::new(
+            client_id,
+            client_secret, 
+            Some(oauth_user_name),
+            redirect_uri, 
+            auth_uri,
+            token_uri, 
+            user_info_endpoint,
+            scopes,
+            None))
     }
 
     pub fn is_openid(&self) -> bool {
@@ -243,7 +254,11 @@ impl OAuthConfig {
         &self.client_id
     }
 
-    pub fn new(
+    pub (crate) fn metadata(&self) -> Option<&IssuerMetadata> {
+        self.metadata.as_ref()
+    }
+
+    pub (crate) fn new(
         client_id: String,
         client_secret: String,
         oauth_user_name: Option<String>,
@@ -252,6 +267,7 @@ impl OAuthConfig {
         token_uri: String,
         userinfo_endpoint: String,
         scopes: Vec<String>,
+        oidc_metadata: Option<IssuerMetadata>,
     ) -> Self {
         Self {
             client_id,
@@ -262,6 +278,7 @@ impl OAuthConfig {
             token_uri,
             userinfo_endpoint,
             scopes,
+            metadata: oidc_metadata,
         }
     }
 

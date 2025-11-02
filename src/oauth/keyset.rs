@@ -21,7 +21,7 @@ impl From<jsonwebtoken::errors::Error> for GetKeyError {
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub struct KeyResponse {
+struct KeyResponse {
     kid: String,
     kty: String,
     alg: String,
@@ -34,7 +34,7 @@ pub struct KeyResponse {
 }
 
 #[derive(serde::Deserialize, Debug)]
-pub struct KeySetResponse {
+struct KeySetResponse {
     keys: Vec<KeyResponse>,
 }
 
