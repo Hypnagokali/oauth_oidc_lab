@@ -11,56 +11,67 @@ pub struct UserIdentity<C> {
 }
 
 #[derive(Debug, Error)]
-#[error("Parsing UserIdentity error: {0}")]
-pub struct UserIdentityError(String);
+#[error("Token validation error: {0}")]
+pub struct TokenValidationError(pub (crate) String);
 
-impl From<jsonwebtoken::errors::Error> for UserIdentityError {
+impl From<jsonwebtoken::errors::Error> for TokenValidationError {
     fn from(err: jsonwebtoken::errors::Error) -> Self {
-        UserIdentityError(err.to_string())
+        TokenValidationError(err.to_string())
     }
 }
 
-impl From<serde_json::Error> for UserIdentityError {
-    fn from(err: serde_json::Error) -> Self {
-        UserIdentityError(err.to_string())
-    }
-}
-
-impl From<GetKeyError> for UserIdentityError {
+impl From<GetKeyError> for TokenValidationError {
     fn from(err: crate::oauth::keyset::GetKeyError) -> Self {
-        UserIdentityError(err.to_string())
+        TokenValidationError(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for TokenValidationError {
+    fn from(err: serde_json::Error) -> Self {
+        TokenValidationError(err.to_string())
+    }
+}
+
+
+pub trait TokenValidation {
+    fn validation(&self, id_token: &str, config: &OAuthConfig) -> impl Future<Output = Result<(DecodingKey, Validation), TokenValidationError>>;
+}
+
+pub struct DefaultTokenValidation;
+
+impl TokenValidation for DefaultTokenValidation {
+    fn validation(&self, id_token: &str, config: &OAuthConfig) -> impl Future<Output = Result<(DecodingKey, Validation), TokenValidationError>> {
+        async move {
+            let metadata = config.metadata()
+            .ok_or_else(|| TokenValidationError("OIDC metadata not available. Can't create UserIdentity if its not an OIDC provider".to_owned()))?;
+
+            // TODO: inject KeyFetcher (and use trait to be testable)
+            let key_fetcher = KeyFetcher::new(metadata.jwks_uri());
+
+            let header = jsonwebtoken::decode_header(id_token)?;
+            let kid = header.kid.ok_or_else(|| TokenValidationError("Missing kid in JWT header".to_owned()))?;
+            let key = key_fetcher.fetch_key(&kid).await?.to_decoding_key()?;
+
+            let mut validation = Validation::default();
+            validation.set_audience(&[config.client_id()]);
+
+            Ok((key.0, validation))
+        }
     }
 }
 
 impl<C: DeserializeOwned> UserIdentity<C> {
     // TODO: needs refactoring. Maybe Inject some ValidationStrategy to be more testable
-    pub async fn from_token(id_token: &str, config: &OAuthConfig, nonce: &str) -> Result<Self, UserIdentityError> {        
-        let metadata = config.metadata()
-            .ok_or_else(|| UserIdentityError("OIDC metadata not available. Can't create UserIdentity if its not an OIDC provider".to_owned()))?;
-
-        // TODO: inject KeyFetcher (and use trait to be testable)
-        let key_fetcher = KeyFetcher::new(metadata.jwks_uri());
-
-        let header = jsonwebtoken::decode_header(id_token)?;
-        let kid = header.kid.ok_or_else(|| UserIdentityError("Missing kid in JWT header".to_owned()))?;
-        let key = key_fetcher.fetch_key(&kid).await?.to_decoding_key()?;
-
-        let mut validation = Validation::default();
-        validation.set_audience(&[config.client_id()]);
-
-        let raw: Value = jsonwebtoken::decode::<Value>(id_token, &key.0, &validation)?.claims;
+    pub async fn from_token<V: TokenValidation>(id_token: &str, validation: V, config: &OAuthConfig, nonce: &str) -> Result<Self, TokenValidationError> {
+        let key_and_validation = validation.validation(id_token, &config).await?;
+        let raw: Value = jsonwebtoken::decode::<Value>(id_token, &key_and_validation.0, &key_and_validation.1)?.claims;
 
         let token_nonce = raw.get("nonce")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| UserIdentityError("Nonce claim missing in ID token".to_string()))?;
+            .ok_or_else(|| TokenValidationError("Nonce claim missing in ID token".to_string()))?;
 
         if !is_equal_constant_time(token_nonce, nonce) {
-            return Err(UserIdentityError("Nonce mismatch in ID token".to_string()));
-        }
-        
-        #[cfg(test)]
-        {
-            validation.validate_exp = false;
+            return Err(TokenValidationError("Nonce mismatch in ID token".to_string()));
         }
         
         let claims = serde_json::from_value::<C>(raw)?;
@@ -75,9 +86,27 @@ impl<C: DeserializeOwned> UserIdentity<C> {
 #[cfg(test)]
 mod tests {
 
-    use crate::oauth::provider::OAuthConfig;
+    use jsonwebtoken::{DecodingKey, Validation};
+
+    use crate::oauth::{identity::{TokenValidation, TokenValidationError}, provider::OAuthConfig};
 
     use super::UserIdentity;
+
+
+    struct TestValidation;
+    impl TokenValidation for TestValidation {
+        fn validation(&self, _id_token: &str, _config: &OAuthConfig) -> impl Future<Output = Result<(DecodingKey, Validation), TokenValidationError>> {
+            async move {
+                let key = DecodingKey::from_secret("".as_ref());
+                let mut validation = Validation::default();
+                validation.insecure_disable_signature_validation();
+                validation.validate_exp = false;
+                validation.validate_aud = false;
+                Ok((key, validation))
+            }
+        }
+    }
+
 
     #[derive(serde::Deserialize, Debug)]
     struct MyClaims {
@@ -86,10 +115,7 @@ mod tests {
     }
 
     #[actix_rt::test]
-    // TODO: remove this, if test is fixed
-    #[allow(unreachable_code)]
     async fn test_parse_id_token() {
-        unimplemented!("Test currently fails. Needs mocking / refactoring");
         let config = OAuthConfig::new(
             "oidc_test".into(), 
             "".into(), 
@@ -117,7 +143,12 @@ mod tests {
             "WkdsXNIiiVwYjHxMA50YrLX8VcUJODuPIp4QorfWLxXswksOHW2UMpEklx7qNr-ps42MgQ40zTJZR_fOYHn5hPlauwKfqgkGmuHdkFQeftWlXfSgs10Yg"
         );
 
-        let user_identity = UserIdentity::<MyClaims>::from_token(id_token, &config, "").await.unwrap();
+        let user_identity = UserIdentity::<MyClaims>::from_token(
+            id_token,
+            TestValidation,
+            &config, 
+            "mTQVz8c3GfTWiFma2pEqLZUGWxqVPwyZmxKHZqa337wWjd_sehr8FaLXVhXBhqwT5FXkJ0_4DqPqA6k5px0Lyg"
+        ).await.unwrap();
         assert_eq!(user_identity.claims.sub, "a5b640fc-42f6-4617-b71b-326edfed18e9");
         assert_eq!(user_identity.claims.name, "Hans Hase");
     }

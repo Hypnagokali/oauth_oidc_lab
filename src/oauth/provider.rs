@@ -4,7 +4,7 @@ use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::oauth::{client::{create_http_client, CreateHttpClientError}, identity::{UserIdentity, UserIdentityError}, oidc::IssuerMetadata, userinfo::UserInfoAttributes};
+use crate::oauth::{client::{CreateHttpClientError, create_http_client}, identity::{DefaultTokenValidation, TokenValidationError, UserIdentity}, oidc::IssuerMetadata, userinfo::UserInfoAttributes};
 
 
 #[derive(Serialize)]
@@ -64,20 +64,10 @@ pub struct TokenProvider {
     config: Arc<OAuthConfig>,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("Token validation error: {0}")]
-pub struct TokenValidationError(String);
-
-impl From<UserIdentityError> for TokenValidationError {
-    fn from(err: UserIdentityError) -> Self {
-        TokenValidationError(err.to_string())
-    }
-}
-
 impl TokenProvider {
     pub async fn identity<C: DeserializeOwned>(&self) -> Result<UserIdentity<C>, TokenValidationError> {
         if let Some(id_token) = &self.id_token {
-            let identity = UserIdentity::from_token(&id_token.raw_token, &*self.config, &id_token.nonce).await?;
+            let identity = UserIdentity::from_token(&id_token.raw_token, DefaultTokenValidation, &*self.config, &id_token.nonce).await?;
             Ok(identity)
         } else {
             Err(TokenValidationError("No ID token available for identity extraction".to_string()))

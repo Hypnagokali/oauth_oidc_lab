@@ -116,12 +116,12 @@ async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, p
     invalidate_cookie(&mut pkce_cookie);
     invalidate_cookie(&mut state_cookie);
     invalidate_cookie(&mut nonce_cookie);
-    println!("After invalidation: pkce: {:?}, state: {:?}", pkce_cookie, state_cookie);
 
+    // TODO: set session cookie and redirect
     HttpResponse::Ok()
-        .cookie(pkce_cookie) // remove cookie
-        .cookie(state_cookie) // remove cookie
-        .cookie(nonce_cookie) // remove cookie
+        .cookie(pkce_cookie)
+        .cookie(state_cookie)
+        .cookie(nonce_cookie)
         // TODO: add cache control headers
         .body(format!("You are logged in. Hi {}", user_info.name()))
 }
