@@ -114,7 +114,7 @@ async fn sso_callback(
     };
 
     // TODO: refactor two wrapped ifs
-    let mut nonce_cookie = if provider.is_openid() {
+    let nonce_cookie = if provider.is_openid() {
         let nonce_cookie = if let Some(nonce_cookie) = req.cookie(NONCE_COOKIE_NAME) {
             nonce_cookie
         } else {
