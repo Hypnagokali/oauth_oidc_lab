@@ -37,6 +37,7 @@ struct TokenResponse {
     expires_in: Option<u64>,
     refresh_expires_in: Option<u64>,
     refresh_token: Option<String>,
+    #[allow(dead_code)]
     scope: Option<String>,
 }
 
@@ -46,9 +47,33 @@ pub struct AccessToken {
     expires_in: Option<u64>,
 }
 
+impl AccessToken {
+    pub fn raw_token(&self) -> &str {
+        &self.raw_token
+    }
+
+    pub fn token_type(&self) -> &str {
+        &self.token_type
+    }
+
+    pub fn expires_in(&self) -> Option<u64> {
+        self.expires_in
+    }
+}
+
 pub struct RefreshToken {
     raw_token: String,
     expires_in: Option<u64>,
+}
+
+impl RefreshToken {
+    pub fn raw_token(&self) -> &str {
+        &self.raw_token
+    }
+
+    pub fn expires_in(&self) -> Option<u64> {
+        self.expires_in
+    }
 }
 
 pub struct IdToken {
@@ -58,13 +83,21 @@ pub struct IdToken {
 }
 
 pub struct TokenProvider {
-    access_token: AccessToken,
-    id_token: Option<IdToken>,
-    refresh_token: Option<RefreshToken>,
+    access_token: Arc<AccessToken>,
+    id_token: Option<IdToken>, // no Arc needed, because the user cannot retrieve it directly
+    refresh_token: Option<Arc<RefreshToken>>,
     config: Arc<OAuthConfig>,
 }
 
 impl TokenProvider {
+    pub fn access_token(&self) -> Arc<AccessToken> {
+        Arc::clone(&self.access_token)
+    }
+
+    pub fn refresh_token(&self) -> Option<Arc<RefreshToken>> {
+        self.refresh_token.as_ref().map(Arc::clone)
+    }
+
     pub async fn identity<C: DeserializeOwned>(&self) -> Result<UserIdentity<C>, TokenValidationError> {
         if let Some(id_token) = &self.id_token {
             let identity = UserIdentity::from_token(&id_token.raw_token, DefaultTokenValidation, &*self.config, &id_token.nonce).await?;
@@ -134,9 +167,9 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<&str>)> for TokenProvider {
         };
 
         TokenProvider {
-            access_token,
+            access_token: Arc::new(access_token),
             id_token,
-            refresh_token,
+            refresh_token: refresh_token.map(|rt| Arc::new(rt)),
             config,
         }
     }
@@ -174,7 +207,6 @@ pub struct OAuthConfig {
     // ToDo: pkce and method needed
     client_id: String,
     client_secret: String,
-    oauth_user_name: Option<String>,
     redirect_uri: String,
     auth_uri: String,
     token_uri: String,
@@ -200,7 +232,6 @@ impl OAuthConfig {
                     let conf = OAuthConfig::new(
                         client_id,
                         client_secret,
-                        None,
                         env::var("redirect_uri")?,
                         metadata.authorization_endpoint().to_string(),
                         metadata.token_endpoint().to_string(),
@@ -218,7 +249,6 @@ impl OAuthConfig {
             }
         }
 
-        let oauth_user_name = env::var("oauth_user_name")?;
         let redirect_uri = env::var("redirect_uri")?;
         let auth_uri = env::var("auth_uri")?;
         let token_uri = env::var("token_uri")?;
@@ -227,7 +257,6 @@ impl OAuthConfig {
         Ok(OAuthConfig::new(
             client_id,
             client_secret, 
-            Some(oauth_user_name),
             redirect_uri, 
             auth_uri,
             token_uri, 
@@ -251,7 +280,6 @@ impl OAuthConfig {
     pub (crate) fn new(
         client_id: String,
         client_secret: String,
-        oauth_user_name: Option<String>,
         redirect_uri: String,
         auth_uri: String,
         token_uri: String,
@@ -262,7 +290,6 @@ impl OAuthConfig {
         Self {
             client_id,
             client_secret,
-            oauth_user_name,
             redirect_uri,
             auth_uri,
             token_uri,

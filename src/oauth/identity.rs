@@ -45,7 +45,6 @@ impl TokenValidation for DefaultTokenValidation {
             let metadata = config.metadata()
             .ok_or_else(|| TokenValidationError("OIDC metadata not available. Can't create UserIdentity if its not an OIDC provider".to_owned()))?;
 
-            // TODO: inject KeyFetcher (and use trait to be testable)
             let key_fetcher = KeyFetcher::new(metadata.jwks_uri());
 
             let header = jsonwebtoken::decode_header(id_token)?;
@@ -61,7 +60,14 @@ impl TokenValidation for DefaultTokenValidation {
 }
 
 impl<C: DeserializeOwned> UserIdentity<C> {
-    // TODO: needs refactoring. Maybe Inject some ValidationStrategy to be more testable
+    pub fn id_token(&self) -> &str {
+        &self.id_token
+    }
+
+    pub fn claims(&self) -> &C {
+        &self.claims
+    }
+
     pub async fn from_token<V: TokenValidation>(id_token: &str, validation: V, config: &OAuthConfig, nonce: &str) -> Result<Self, TokenValidationError> {
         let key_and_validation = validation.validation(id_token, &config).await?;
         let raw: Value = jsonwebtoken::decode::<Value>(id_token, &key_and_validation.0, &key_and_validation.1)?.claims;
@@ -92,7 +98,6 @@ mod tests {
 
     use super::UserIdentity;
 
-
     struct TestValidation;
     impl TokenValidation for TestValidation {
         fn validation(&self, _id_token: &str, _config: &OAuthConfig) -> impl Future<Output = Result<(DecodingKey, Validation), TokenValidationError>> {
@@ -119,7 +124,6 @@ mod tests {
         let config = OAuthConfig::new(
             "oidc_test".into(), 
             "".into(), 
-            None, 
             "".into(), 
             "".into(), 
             "".into(), 
