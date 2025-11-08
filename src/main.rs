@@ -1,10 +1,15 @@
-use actix_web::{cookie::{time::{Duration, OffsetDateTime}, Cookie, SameSite}, get, web::{Data, Query}, App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder};
+use actix_web::{App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder, cookie::{Cookie, SameSite, time::{Duration, OffsetDateTime}}, get, web::{self, Data, Query}};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
 use rand::{rand_core::OsError, TryRngCore};
 use serde::Deserialize;
 
-use crate::oauth::{provider::{AuthCodeResponse, OAuthConfig, OAuthProvider}, userinfo::UserInfoAttributes, util::is_equal_constant_time};
+use crate::oauth::{
+    provider::AuthCodeResponse,
+    userinfo::UserInfoAttributes,
+    util::is_equal_constant_time,
+    registry::OAuthProviderRegistry,
+};
 
 pub mod oauth;
 
@@ -18,8 +23,19 @@ pub struct KcTestUserInfo {
 }
 
 impl UserInfoAttributes for KcTestUserInfo {
-    fn name(&self) -> String {
+    fn username(&self) -> String {
         self.name.clone()
+    }
+}
+
+#[derive(Deserialize)]
+pub struct GitHubUserInfo {
+    login: String,
+}
+
+impl UserInfoAttributes for GitHubUserInfo {
+    fn username(&self) -> String {
+        self.login.clone()
     }
 }
 
@@ -64,11 +80,22 @@ fn generate_random_code() -> Result<String, OsError> {
     Ok(random_code)
 }
 
-#[get("/login/oauth2/code")]
-async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, provider: Data<OAuthProvider>) -> impl Responder {
+#[get("/login/oauth2/code/{provider}")]
+async fn sso_callback(
+    req: HttpRequest,
+    path: web::Path<String>,
+    response_query: Query<AuthCodeResponse>,
+    registry: Data<OAuthProviderRegistry>
+) -> impl Responder {
+    let provider_name = path.into_inner();
+    let provider = match registry.get_provider(&provider_name) {
+        Some(p) => p,
+        None => return unauthorized_error_and_invalidate_cookies("Invalid provider"),
+    };
+
     let state_from_provider = response_query.state();
 
-    let mut pkce_cookie = if let Some (pkce_cookie) = req.cookie(PKCE_COOKIE_NAME) {
+    let mut pkce_cookie = if let Some(pkce_cookie) = req.cookie(PKCE_COOKIE_NAME) {
         pkce_cookie
     } else {
         return unauthorized_error_and_invalidate_cookies("Missing PKCE cookie");
@@ -78,7 +105,6 @@ async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, p
     // Redirect back to /login
     // max tries: about 3x and then return 401:
     let mut state_cookie = if let Some(state_cookie) = req.cookie(STATE_COOKIE_NAME) {
-        // ToDo: time constant comparison
         if is_equal_constant_time(state_cookie.value(), state_from_provider) == false {
             return unauthorized_error_and_invalidate_cookies("Invalid state parameter");
         }
@@ -87,17 +113,23 @@ async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, p
         return unauthorized_error_and_invalidate_cookies("Missing state cookie");
     };
 
-    let mut nonce_cookie = if let Some(nonce_cookie) = req.cookie(NONCE_COOKIE_NAME) {
-        nonce_cookie
+    // TODO: refactor two wrapped ifs
+    let mut nonce_cookie = if provider.is_openid() {
+        let nonce_cookie = if let Some(nonce_cookie) = req.cookie(NONCE_COOKIE_NAME) {
+            nonce_cookie
+        } else {
+            return unauthorized_error_and_invalidate_cookies("Missing nonce cookie");
+        };
+        Some(nonce_cookie)
     } else {
-        return unauthorized_error_and_invalidate_cookies("Missing nonce cookie");
+        None
     };
 
     let token_provider = match provider.code_to_token_request(
-        response_query.code(), 
+        response_query.code(),
         pkce_cookie.value(),
-        Option::Some(nonce_cookie.value())
-    ).await {
+        nonce_cookie.as_ref().map(|c| c.value().to_owned()),
+        ).await {
         Ok(prov) => prov,
         Err(e) => {
             println!("Error during token request: {}", e);
@@ -105,30 +137,59 @@ async fn sso_github(req: HttpRequest, response_query: Query<AuthCodeResponse>, p
         }
     };
 
-    let user_info: KcTestUserInfo = match token_provider.user_info().await {
-        Ok(info) => info,
+    // Select user info type based on provider
+    let user_info = match provider_name.as_str() {
+        "github" => {
+            let info: Result<GitHubUserInfo, _> = token_provider.user_info().await;
+            info.map(|i| i.username())
+        },
+        "keycloak" => {
+            let info: Result<KcTestUserInfo, _> = token_provider.user_info().await;
+            info.map(|i| i.username())
+        },
+        _ => return unauthorized_error_and_invalidate_cookies("Unsupported provider"),
+    };
+
+    let user_name = match user_info {
+        Ok(name) => name,
         Err(e) => {
             println!("Error fetching user info: {}", e);
             return unauthorized_error_and_invalidate_cookies("Error fetching user info");
         }
     };
 
+    let mut res = HttpResponse::Ok();
+
     invalidate_cookie(&mut pkce_cookie);
     invalidate_cookie(&mut state_cookie);
-    invalidate_cookie(&mut nonce_cookie);
-
-    // TODO: set session cookie and redirect
-    HttpResponse::Ok()
+    res
         .cookie(pkce_cookie)
-        .cookie(state_cookie)
-        .cookie(nonce_cookie)
+        .cookie(state_cookie);
+
+    if let Some(mut nonce_cookie) = nonce_cookie {
+        invalidate_cookie(&mut nonce_cookie);
+        res.cookie(nonce_cookie);
+    }
+
+    // TODO: set session cookie and do redirect
+    res
         // TODO: add cache control headers
-        .body(format!("You are logged in. Hi {}", user_info.name()))
+        .body(format!("You are logged in. Hi {}", user_name))
 }
 
-#[get("/login/oauth2/auth")]
-async fn login_github(provider: Data<OAuthProvider>) -> impl Responder {
-    println!("GET /login/oauth2/auth");
+#[get("/login/oauth2/auth/{provider}")]
+async fn login_provider(
+    path: web::Path<String>,
+    registry: Data<OAuthProviderRegistry>
+) -> impl Responder {
+    println!("GET /login/oauth2/auth/{}", path.as_str());
+    let provider_name = path.into_inner();
+    
+    let provider = match registry.get_provider(&provider_name) {
+        Some(p) => p,
+        None => return HttpResponse::NotFound().body("Provider not found"),
+    };
+
     let state = match generate_random_code() {
         Ok(code) => code,
         Err(e) => {
@@ -178,7 +239,6 @@ async fn login_github(provider: Data<OAuthProvider>) -> impl Responder {
             .cookie(pkce_cookie)
             .finish()
     }
-    
 }
 
 #[get("/")]
@@ -192,7 +252,7 @@ async fn login() -> Markup {
                     a href="/login/oauth2/auth/github" { "Login with GitHub" }
                 }
                 div {
-                    a href="/login/oauth2/auth" { "Login with Keycloak" }
+                    a href="/login/oauth2/auth/keycloak" { "Login with Keycloak" }
                 }
             }
         }
@@ -200,16 +260,16 @@ async fn login() -> Markup {
 }
 
 #[actix_web::main]
-async fn main() -> std::io::Result<()> {    
+async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
-    let provider = Data::new(OAuthProvider::new(OAuthConfig::from_env().await.expect("OAuth 2.0 variables missing or invalid")));
+    let registry = Data::new(OAuthProviderRegistry::from_env().await.expect("OAuth 2.0 providers configuration missing or invalid"));
 
     HttpServer::new(move || {
             App::new()
                 .service(login)
-                .service(login_github)
-                .service(sso_github)
-                .app_data(provider.clone())
+                .service(login_provider)
+                .service(sso_callback)
+                .app_data(registry.clone())
             
         })
         .workers(1)

@@ -141,8 +141,8 @@ impl TokenProvider {
     }
 }
 
-impl From<(Arc<OAuthConfig>, TokenResponse, Option<&str>)> for TokenProvider {
-    fn from((config, response, nonce): (Arc<OAuthConfig>, TokenResponse, Option<&str>)) -> Self {
+impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
+    fn from((config, response, nonce): (Arc<OAuthConfig>, TokenResponse, Option<String>)) -> Self {
         let access_token = AccessToken {
             raw_token: response.access_token,
             token_type: response.token_type,
@@ -153,7 +153,7 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<&str>)> for TokenProvider {
             Some(id_token_str) => Some(IdToken {
                 raw_token: id_token_str,
                 // set nonce to an empty string if not provided (should be okay for now)
-                nonce: nonce.unwrap_or("").to_string(),
+                nonce: nonce.unwrap_or_default(),
             }),
             None => None,
         };
@@ -194,7 +194,7 @@ impl AuthCodeResponse {
 
 #[derive(Debug, thiserror::Error)]
 #[error("OAuthConfig error: {0}")]
-pub struct OAuthConfigError(String);
+pub struct OAuthConfigError(pub String);
 
 impl From<VarError> for OAuthConfigError {
     fn from(err: VarError) -> Self {
@@ -215,24 +215,38 @@ pub struct OAuthConfig {
     metadata: Option<IssuerMetadata>,
 }
 
+fn read_env_var(key: &str) -> Result<String, OAuthConfigError> {
+    match env::var(key) {
+        Ok(value) => Ok(value),
+        Err(e) => Err(OAuthConfigError(format!("Failed to read .env variable {}: {}", key, e))),
+    }
+}
 
 impl OAuthConfig {
     pub async fn from_env() -> Result<Self, OAuthConfigError> {
-        let client_id = env::var("client_id")?;
-        let client_secret = env::var("client_secret")?;
-        let scopes_from_env = env::var("scopes").unwrap_or("".into());
+        Self::from_env_with_prefix("").await
+    }
+
+    pub async fn from_env_with_prefix(prefix: &str) -> Result<Self, OAuthConfigError> {
+        let client_id = read_env_var(&format!("{}CLIENT_ID", prefix))?;
+        let client_secret = read_env_var(&format!("{}CLIENT_SECRET", prefix))?;
+        let scopes_from_env = read_env_var(&format!("{}SCOPES", prefix)).unwrap_or("".into());
+        let host = read_env_var("HOST")?;
+
+        let provider_name = prefix.trim_end_matches('_').to_lowercase();
+        let redirect_uri = format!("{}/login/oauth2/code/{}", host, provider_name);
 
         let scopes: Vec<String> = scopes_from_env.split(',').map(|s| s.trim().to_lowercase().to_string()).collect();
     
         if scopes_from_env.contains("openid") {
-            match env::var("issuer_url") {
+            match env::var(format!("{}ISSUER_URL", prefix)) {
                 Ok(issuer_url) => {
                     let metadata = IssuerMetadata::from_issuer(&issuer_url).await.expect("Failed to fetch OIDC metadata");
 
                     let conf = OAuthConfig::new(
                         client_id,
                         client_secret,
-                        env::var("redirect_uri")?,
+                        redirect_uri,
                         metadata.authorization_endpoint().to_string(),
                         metadata.token_endpoint().to_string(),
                         metadata.userinfo_endpoint().to_string(),
@@ -244,15 +258,14 @@ impl OAuthConfig {
                     return Ok(conf);
                 }
                 Err(_) => {
-                    println!("Missing issuer_url. No provider discovery possible. OAuthConfig will now use manual vars instead.");
+                    println!("Missing {prefix}ISSUER_URL. No provider discovery possible. OAuthConfig will now use manual vars instead.");
                 }
             }
         }
 
-        let redirect_uri = env::var("redirect_uri")?;
-        let auth_uri = env::var("auth_uri")?;
-        let token_uri = env::var("token_uri")?;
-        let user_info_endpoint = env::var("userinfo_endpoint")?;
+        let auth_uri = env::var(format!("{}AUTH_URI", prefix))?;
+        let token_uri = env::var(format!("{}TOKEN_URI", prefix))?;
+        let user_info_endpoint = env::var(format!("{}USERINFO_ENDPOINT", prefix))?;
 
         Ok(OAuthConfig::new(
             client_id,
@@ -362,7 +375,7 @@ impl OAuthProvider {
         )
     }
 
-    pub async fn code_to_token_request(&self, code: &str, pkce: &str, nonce: Option<&str>) -> Result<TokenProvider, TokenRequestError> {
+    pub async fn code_to_token_request(&self, code: &str, pkce: &str, nonce: Option<String>) -> Result<TokenProvider, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
         token_request.set_code_verifier(pkce);
