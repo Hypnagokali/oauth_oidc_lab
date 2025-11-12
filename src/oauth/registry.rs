@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::oauth::provider::{OAuthConfig, OAuthProvider, OAuthConfigError};
+use crate::{GitHubUserMapper, KeycloakUserMapper, UserMapper, oauth::provider::{OAuthConfig, OAuthConfigError, OAuthProvider}};
 
 #[derive(Debug, thiserror::Error)]
 #[error("Provider registry error: {0}")]
@@ -42,7 +42,15 @@ impl OAuthProviderRegistry {
             let name = prefix.trim_end_matches('_').to_lowercase();
             
             let config = OAuthConfig::from_env_with_prefix(&prefix).await?;
-            providers.insert(name, OAuthProvider::new(config));
+
+            // Just a quick fix for now :)
+            let mapper: Arc<dyn UserMapper> = match name.as_ref() {
+                "github" => Arc::new(GitHubUserMapper),
+                "keycloak" => Arc::new(KeycloakUserMapper),
+                not_found => panic!("No UserMapper found for {}", not_found)
+            };
+
+            providers.insert(name, OAuthProvider::new(config, mapper));
 
         }
 

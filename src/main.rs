@@ -1,3 +1,5 @@
+use std::pin::Pin;
+
 use actix_web::{App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder, cookie::{Cookie, SameSite, time::{Duration, OffsetDateTime}}, get, web::{self, Data, Query}};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
 use maud::{html, Markup};
@@ -5,10 +7,7 @@ use rand::{rand_core::OsError, TryRngCore};
 use serde::Deserialize;
 
 use crate::oauth::{
-    provider::AuthCodeResponse,
-    userinfo::UserInfoAttributes,
-    util::is_equal_constant_time,
-    registry::OAuthProviderRegistry,
+    provider::{AuthCodeResponse, TokenProvider, TokenRequestError}, registry::OAuthProviderRegistry, userinfo::UserInfoAttributes, util::is_equal_constant_time
 };
 
 pub mod oauth;
@@ -20,6 +19,7 @@ const STATE_COOKIE_NAME: &str = "state";
 #[derive(Deserialize)]
 pub struct KcTestUserInfo {
     name: String,
+    email: String,
 }
 
 impl UserInfoAttributes for KcTestUserInfo {
@@ -28,11 +28,60 @@ impl UserInfoAttributes for KcTestUserInfo {
     }
 }
 
+pub struct User {
+    name: String,
+    email: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("User mapping error: {0}")]
+pub struct UserMappingError(pub String);
+
+impl From<TokenRequestError> for UserMappingError {
+    fn from(err: TokenRequestError) -> Self {
+        UserMappingError(format!("Token request error: {}", err))
+    }
+}
+
+pub trait UserMapper: Send + Sync {
+    fn to_user(&self, token_provider: TokenProvider) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>>;
+}
+
+pub struct GitHubUserMapper;
+
+impl UserMapper for GitHubUserMapper {
+    fn to_user(&self, token_provider: TokenProvider) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
+        Box::pin(async move {
+            let info: Result<GitHubUserInfo, _> = token_provider.user_info().await;
+            info.map(|i| User {
+                name: i.login,
+                email: i.email,
+            }).map_err(|e| e.into())
+        })
+    }
+}
+
+pub struct KeycloakUserMapper;
+
+impl UserMapper for KeycloakUserMapper {
+    fn to_user(&self, token_provider: TokenProvider) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
+        Box::pin(async move {
+            let info: Result<KcTestUserInfo, _> = token_provider.user_info().await;
+            info.map(|i: KcTestUserInfo| User {
+                name: i.name,
+                email: i.email,
+            }).map_err(|e| e.into())
+        })
+    }
+}
+
 #[derive(Deserialize)]
 pub struct GitHubUserInfo {
     login: String,
+    email: String,
 }
 
+// TODO: Is this still needed when there is a UserMapper?
 impl UserInfoAttributes for GitHubUserInfo {
     fn username(&self) -> String {
         self.login.clone()
@@ -137,21 +186,8 @@ async fn sso_callback(
         }
     };
 
-    // Select user info type based on provider
-    let user_info = match provider_name.as_str() {
-        "github" => {
-            let info: Result<GitHubUserInfo, _> = token_provider.user_info().await;
-            info.map(|i| i.username())
-        },
-        "keycloak" => {
-            let info: Result<KcTestUserInfo, _> = token_provider.user_info().await;
-            info.map(|i| i.username())
-        },
-        _ => return unauthorized_error_and_invalidate_cookies("Unsupported provider"),
-    };
-
-    let user_name = match user_info {
-        Ok(name) => name,
+    let user = match provider.mapper().to_user(token_provider).await {
+        Ok(user) => user,
         Err(e) => {
             println!("Error fetching user info: {}", e);
             return unauthorized_error_and_invalidate_cookies("Error fetching user info");
@@ -174,7 +210,7 @@ async fn sso_callback(
     // TODO: set session cookie and do redirect
     res
         // TODO: add cache control headers
-        .body(format!("You are logged in. Hi {}", user_name))
+        .body(format!("You are logged in. Hi {} ({})", user.name, user.email))
 }
 
 #[get("/login/oauth2/auth/{provider}")]
@@ -262,7 +298,10 @@ async fn login() -> Markup {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
-    let registry = Data::new(OAuthProviderRegistry::from_env().await.expect("OAuth 2.0 providers configuration missing or invalid"));
+
+    // TODO: Add the UserMappers to the providers
+    let registry = Data::new(OAuthProviderRegistry::from_env().await
+        .expect("OAuth 2.0 providers configuration missing or invalid"));
 
     HttpServer::new(move || {
             App::new()

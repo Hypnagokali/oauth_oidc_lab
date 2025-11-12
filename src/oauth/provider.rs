@@ -4,7 +4,7 @@ use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::Digest;
 
-use crate::oauth::{client::{CreateHttpClientError, create_http_client}, identity::{DefaultTokenValidation, TokenValidationError, UserIdentity}, oidc::IssuerMetadata, userinfo::UserInfoAttributes};
+use crate::{UserMapper, oauth::{client::{CreateHttpClientError, create_http_client}, identity::{DefaultTokenValidation, TokenValidationError, UserIdentity}, oidc::IssuerMetadata, userinfo::UserInfoAttributes}};
 
 
 #[derive(Serialize)]
@@ -334,13 +334,19 @@ impl From<CreateHttpClientError> for TokenRequestError {
 
 pub struct OAuthProvider {
     config: Arc<OAuthConfig>,
+    user_mapper: Arc<dyn UserMapper>,
 }
 
 impl OAuthProvider {
-    pub fn new(config: OAuthConfig) -> Self {
+    pub fn new(config: OAuthConfig, user_mapper: Arc<dyn UserMapper>) -> Self {
         OAuthProvider { 
             config: Arc::new(config),
+            user_mapper,
         }
+    }
+
+    pub fn mapper(&self) -> Arc<dyn UserMapper> {
+        Arc::clone(&self.user_mapper)
     }
 
     pub fn is_openid(&self) -> bool {
