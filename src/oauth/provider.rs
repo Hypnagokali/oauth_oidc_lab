@@ -333,16 +333,23 @@ impl From<CreateHttpClientError> for TokenRequestError {
 }
 
 pub struct OAuthProvider {
+    name: String,
     config: Arc<OAuthConfig>,
     user_mapper: Arc<dyn UserMapper>,
 }
 
 impl OAuthProvider {
-    pub fn new(config: OAuthConfig, user_mapper: Arc<dyn UserMapper>) -> Self {
+    pub fn new(name: &str, config: OAuthConfig, user_mapper: Arc<dyn UserMapper>) -> Self {
         OAuthProvider { 
+            name: name.to_owned(),
             config: Arc::new(config),
             user_mapper,
         }
+    }
+
+    /// Return the provider name as supplied during construction.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn mapper(&self) -> Arc<dyn UserMapper> {

@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::sync::Arc;
 
 use actix_web::{App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder, cookie::{Cookie, SameSite, time::{Duration, OffsetDateTime}}, get, web::{self, Data, Query}};
 use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
@@ -7,7 +8,7 @@ use rand::{rand_core::OsError, TryRngCore};
 use serde::Deserialize;
 
 use crate::oauth::{
-    provider::{AuthCodeResponse, TokenProvider, TokenRequestError}, registry::OAuthProviderRegistry, userinfo::UserInfoAttributes, util::is_equal_constant_time
+    provider::{AuthCodeResponse, TokenProvider, TokenRequestError, OAuthConfig, OAuthProvider}, registry::OAuthProviderRegistry, userinfo::UserInfoAttributes, util::is_equal_constant_time
 };
 
 pub mod oauth;
@@ -299,9 +300,25 @@ async fn login() -> Markup {
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
 
-    // TODO: Add the UserMappers to the providers
-    let registry = Data::new(OAuthProviderRegistry::from_env().await
-        .expect("OAuth 2.0 providers configuration missing or invalid"));
+    let mut providers: Vec<OAuthProvider> = Vec::new();
+
+    // GitHub provider
+    if let Ok(github_conf) = OAuthConfig::from_env_with_prefix("GITHUB_").await {
+        let github_provider = OAuthProvider::new("github", github_conf, Arc::new(GitHubUserMapper));
+        providers.push(github_provider);
+    }
+
+    // Keycloak provider
+    if let Ok(keycloak_conf) = OAuthConfig::from_env_with_prefix("KEYCLOAK_").await {
+        let keycloak_provider = OAuthProvider::new("keycloak", keycloak_conf, Arc::new(KeycloakUserMapper));
+        providers.push(keycloak_provider);
+    }
+
+    if providers.is_empty() {
+        panic!("OAuth 2.0 providers configuration missing or invalid");
+    }
+
+    let registry = Data::new(OAuthProviderRegistry::from_vec(providers));
 
     HttpServer::new(move || {
             App::new()
