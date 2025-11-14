@@ -131,10 +131,18 @@ impl TokenProvider {
             return Err(TokenRequestError(format!("Couldn't fetch user info data: {}", user_response.status())));
         }
 
-        match user_response.json().await {
+        let user_body = match user_response.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                println!("Error reading user info response body: {}", e);
+                return Err(TokenRequestError(format!("Error reading user info response body: {}", e)));
+            }
+        };
+
+        match serde_json::from_str::<UA>(&user_body) {
             Ok(json) => return Ok(json),
             Err(e) => {
-                println!("Error parsing user info response: {}", e);
+                println!("Error parsing user info response. Raw response body:\n{}", user_body);
                 return Err(TokenRequestError(format!("Error parsing user info response: {}", e)));
             }
         };
@@ -227,16 +235,20 @@ impl OAuthConfig {
         Self::from_env_with_prefix("").await
     }
 
-    pub async fn from_env_with_prefix(prefix: &str) -> Result<Self, OAuthConfigError> {
+    pub async fn from_env_with_prefix(provider_name: &str) -> Result<Self, OAuthConfigError> {
+        let prefix = format!("{}_", provider_name.to_uppercase());
+
         let client_id = read_env_var(&format!("{}CLIENT_ID", prefix))?;
         let client_secret = read_env_var(&format!("{}CLIENT_SECRET", prefix))?;
         let scopes_from_env = read_env_var(&format!("{}SCOPES", prefix)).unwrap_or("".into());
         let host = read_env_var("HOST")?;
 
-        let provider_name = prefix.trim_end_matches('_').to_lowercase();
+        let provider_name = provider_name.to_lowercase();
         let redirect_uri = format!("{}/login/oauth2/code/{}", host, provider_name);
 
-        let scopes: Vec<String> = scopes_from_env.split(',').map(|s| s.trim().to_lowercase().to_string()).collect();
+        let scopes: Vec<String> = scopes_from_env.split(',')
+            .map(|s| s.trim().to_lowercase().to_string())
+            .collect();
     
         if scopes_from_env.contains("openid") {
             match env::var(format!("{}ISSUER_URL", prefix)) {
@@ -254,7 +266,6 @@ impl OAuthConfig {
                         Some(metadata)
                     );
 
-                    println!("{conf:?}");
                     return Ok(conf);
                 }
                 Err(_) => {

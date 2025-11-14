@@ -303,13 +303,13 @@ async fn main() -> std::io::Result<()> {
     let mut providers: Vec<OAuthProvider> = Vec::new();
 
     // GitHub provider
-    if let Ok(github_conf) = OAuthConfig::from_env_with_prefix("GITHUB_").await {
+    if let Ok(github_conf) = OAuthConfig::from_env_with_prefix("GITHUB").await {
         let github_provider = OAuthProvider::new("github", github_conf, Arc::new(GitHubUserMapper));
         providers.push(github_provider);
     }
 
     // Keycloak provider
-    if let Ok(keycloak_conf) = OAuthConfig::from_env_with_prefix("KEYCLOAK_").await {
+    if let Ok(keycloak_conf) = OAuthConfig::from_env_with_prefix("KEYCLOAK").await {
         let keycloak_provider = OAuthProvider::new("keycloak", keycloak_conf, Arc::new(KeycloakUserMapper));
         providers.push(keycloak_provider);
     }
