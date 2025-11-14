@@ -19,8 +19,9 @@ const STATE_COOKIE_NAME: &str = "state";
 
 #[derive(Deserialize)]
 pub struct KcTestUserInfo {
+    sub: String,
     name: String,
-    email: String,
+    email: Option<String>,
 }
 
 impl UserInfoAttributes for KcTestUserInfo {
@@ -30,8 +31,9 @@ impl UserInfoAttributes for KcTestUserInfo {
 }
 
 pub struct User {
+    id: String,
     name: String,
-    email: String,
+    email: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +58,7 @@ impl UserMapper for GitHubUserMapper {
             let info: Result<GitHubUserInfo, _> = token_provider.user_info().await;
             info.map(|i| User {
                 name: i.login,
+                id: i.id.to_string(),
                 email: i.email,
             }).map_err(|e| e.into())
         })
@@ -69,6 +72,7 @@ impl UserMapper for KeycloakUserMapper {
         Box::pin(async move {
             let info: Result<KcTestUserInfo, _> = token_provider.user_info().await;
             info.map(|i: KcTestUserInfo| User {
+                id: i.sub,
                 name: i.name,
                 email: i.email,
             }).map_err(|e| e.into())
@@ -79,7 +83,8 @@ impl UserMapper for KeycloakUserMapper {
 #[derive(Deserialize)]
 pub struct GitHubUserInfo {
     login: String,
-    email: String,
+    id: i64,
+    email: Option<String>,
 }
 
 // TODO: Is this still needed when there is a UserMapper?
@@ -208,10 +213,14 @@ async fn sso_callback(
         res.cookie(nonce_cookie);
     }
 
+    let email = match &user.email {
+        Some(e) => e.as_str(),
+        None => "no email provided",
+    };
     // TODO: set session cookie and do redirect
     res
         // TODO: add cache control headers
-        .body(format!("You are logged in. Hi {} ({})", user.name, user.email))
+        .body(format!("You are logged in. Hi {} (id={}, email={})", user.name, user.id, email))
 }
 
 #[get("/login/oauth2/auth/{provider}")]
