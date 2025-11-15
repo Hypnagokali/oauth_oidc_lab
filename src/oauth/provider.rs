@@ -1,11 +1,23 @@
-use std::{env::{self, VarError}, sync::Arc};
+use std::{
+    env::{self, VarError},
+    sync::Arc,
+};
 
-use base64::{prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD}, Engine};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use base64::{
+    Engine,
+    prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Digest;
 
-use crate::{UserMapper, oauth::{client::{CreateHttpClientError, create_http_client}, identity::{DefaultTokenValidation, TokenValidationError, UserIdentity}, oidc::IssuerMetadata, userinfo::UserInfoAttributes}};
-
+use crate::{
+    UserMapper,
+    oauth::{
+        client::{CreateHttpClientError, create_http_client},
+        identity::{DefaultTokenValidation, TokenValidationError, UserIdentity},
+        oidc::IssuerMetadata,
+    },
+};
 
 #[derive(Serialize)]
 struct TokenRequest {
@@ -98,52 +110,87 @@ impl TokenProvider {
         self.refresh_token.as_ref().map(Arc::clone)
     }
 
-    pub async fn identity<C: DeserializeOwned>(&self) -> Result<UserIdentity<C>, TokenValidationError> {
+    pub async fn identity<C: DeserializeOwned>(
+        &self,
+    ) -> Result<UserIdentity<C>, TokenValidationError> {
         if let Some(id_token) = &self.id_token {
-            let identity = UserIdentity::from_token(&id_token.raw_token, DefaultTokenValidation, &*self.config, &id_token.nonce).await?;
+            let identity = UserIdentity::from_token(
+                &id_token.raw_token,
+                DefaultTokenValidation,
+                &*self.config,
+                &id_token.nonce,
+            )
+            .await?;
             Ok(identity)
         } else {
-            Err(TokenValidationError("No ID token available for identity extraction".to_string()))
+            Err(TokenValidationError(
+                "No ID token available for identity extraction".to_string(),
+            ))
         }
     }
 
     // TODO: Replace Error type
-    pub async fn user_info<UA: UserInfoAttributes>(&self) -> Result<UA, TokenRequestError> {
+    pub async fn user_info<UA: DeserializeOwned>(&self) -> Result<UA, TokenRequestError> {
         let client = create_http_client()?;
 
-        let user_response_result = client.get(&self.config.userinfo_endpoint)
-            .header("Authorization", format!("{} {}", self.access_token.token_type, self.access_token.raw_token))
+        let user_response_result = client
+            .get(&self.config.userinfo_endpoint)
+            .header(
+                "Authorization",
+                format!(
+                    "{} {}",
+                    self.access_token.token_type, self.access_token.raw_token
+                ),
+            )
             .send()
             .await;
 
         let user_response = match user_response_result {
             Err(e) => {
                 println!("Error during user info request: {}", e);
-                return Err(TokenRequestError(format!("Error during user info request: {}", e)));
-            },
+                return Err(TokenRequestError(format!(
+                    "Error during user info request: {}",
+                    e
+                )));
+            }
             Ok(response) => response,
         };
 
         // TODO: use logging crate here
-        println!("Response status from user info request: {}", user_response.status());
+        println!(
+            "Response status from user info request: {}",
+            user_response.status()
+        );
 
         if user_response.status().as_u16() >= 400 {
-            return Err(TokenRequestError(format!("Couldn't fetch user info data: {}", user_response.status())));
+            return Err(TokenRequestError(format!(
+                "Couldn't fetch user info data: {}",
+                user_response.status()
+            )));
         }
 
         let user_body = match user_response.text().await {
             Ok(body) => body,
             Err(e) => {
                 println!("Error reading user info response body: {}", e);
-                return Err(TokenRequestError(format!("Error reading user info response body: {}", e)));
+                return Err(TokenRequestError(format!(
+                    "Error reading user info response body: {}",
+                    e
+                )));
             }
         };
 
         match serde_json::from_str::<UA>(&user_body) {
             Ok(json) => return Ok(json),
             Err(e) => {
-                println!("Error parsing user info response. Raw response body:\n{}", user_body);
-                return Err(TokenRequestError(format!("Error parsing user info response: {}", e)));
+                println!(
+                    "Error parsing user info response. Raw response body:\n{}",
+                    user_body
+                );
+                return Err(TokenRequestError(format!(
+                    "Error parsing user info response: {}",
+                    e
+                )));
             }
         };
     }
@@ -182,7 +229,6 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
         }
     }
 }
-
 
 #[derive(Deserialize)]
 pub struct AuthCodeResponse {
@@ -226,7 +272,10 @@ pub struct OAuthConfig {
 fn read_env_var(key: &str) -> Result<String, OAuthConfigError> {
     match env::var(key) {
         Ok(value) => Ok(value),
-        Err(e) => Err(OAuthConfigError(format!("Failed to read .env variable {}: {}", key, e))),
+        Err(e) => Err(OAuthConfigError(format!(
+            "Failed to read .env variable {}: {}",
+            key, e
+        ))),
     }
 }
 
@@ -246,14 +295,17 @@ impl OAuthConfig {
         let provider_name = provider_name.to_lowercase();
         let redirect_uri = format!("{}/login/oauth2/code/{}", host, provider_name);
 
-        let scopes: Vec<String> = scopes_from_env.split(',')
+        let scopes: Vec<String> = scopes_from_env
+            .split(',')
             .map(|s| s.trim().to_lowercase().to_string())
             .collect();
-    
+
         if scopes_from_env.contains("openid") {
             match env::var(format!("{}ISSUER_URL", prefix)) {
                 Ok(issuer_url) => {
-                    let metadata = IssuerMetadata::from_issuer(&issuer_url).await.expect("Failed to fetch OIDC metadata");
+                    let metadata = IssuerMetadata::from_issuer(&issuer_url)
+                        .await
+                        .expect("Failed to fetch OIDC metadata");
 
                     let conf = OAuthConfig::new(
                         client_id,
@@ -263,13 +315,15 @@ impl OAuthConfig {
                         metadata.token_endpoint().to_string(),
                         metadata.userinfo_endpoint().to_string(),
                         scopes,
-                        Some(metadata)
+                        Some(metadata),
                     );
 
                     return Ok(conf);
                 }
                 Err(_) => {
-                    println!("Missing {prefix}ISSUER_URL. No provider discovery possible. OAuthConfig will now use manual vars instead.");
+                    println!(
+                        "Missing {prefix}ISSUER_URL. No provider discovery possible. OAuthConfig will now use manual vars instead."
+                    );
                 }
             }
         }
@@ -280,13 +334,14 @@ impl OAuthConfig {
 
         Ok(OAuthConfig::new(
             client_id,
-            client_secret, 
-            redirect_uri, 
+            client_secret,
+            redirect_uri,
             auth_uri,
-            token_uri, 
+            token_uri,
             user_info_endpoint,
             scopes,
-            None))
+            None,
+        ))
     }
 
     pub fn is_openid(&self) -> bool {
@@ -297,11 +352,11 @@ impl OAuthConfig {
         &self.client_id
     }
 
-    pub (crate) fn metadata(&self) -> Option<&IssuerMetadata> {
+    pub(crate) fn metadata(&self) -> Option<&IssuerMetadata> {
         self.metadata.as_ref()
     }
 
-    pub (crate) fn new(
+    pub(crate) fn new(
         client_id: String,
         client_secret: String,
         redirect_uri: String,
@@ -351,7 +406,7 @@ pub struct OAuthProvider {
 
 impl OAuthProvider {
     pub fn new(name: &str, config: OAuthConfig, user_mapper: Arc<dyn UserMapper>) -> Self {
-        OAuthProvider { 
+        OAuthProvider {
             name: name.to_owned(),
             config: Arc::new(config),
             user_mapper,
@@ -371,7 +426,12 @@ impl OAuthProvider {
         self.config.is_openid()
     }
 
-    pub fn build_authentication_url_with_nonce(&self, state: &str, pkce_challenge: &str, nonce: &str) -> String {
+    pub fn build_authentication_url_with_nonce(
+        &self,
+        state: &str,
+        pkce_challenge: &str,
+        nonce: &str,
+    ) -> String {
         let base_url = self.build_authentication_url(state, pkce_challenge);
         format!("{}&nonce={}", base_url, nonce)
     }
@@ -380,7 +440,7 @@ impl OAuthProvider {
         let mut hasher = sha2::Sha256::new();
         hasher.update(pkce_challenge.as_bytes());
         let hash_bytes = hasher.finalize();
-        let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);   
+        let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);
 
         let redirect_uri = urlencoding::encode(&self.config.redirect_uri);
 
@@ -390,16 +450,16 @@ impl OAuthProvider {
         // Hardcoded response_type=code and code_challenge_method=S256 for now
         format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge_method=S256&code_challenge={}",
-            self.config.auth_uri,
-            self.config.client_id,
-            redirect_uri,
-            scope,
-            state,
-            pkce_hash_b64
+            self.config.auth_uri, self.config.client_id, redirect_uri, scope, state, pkce_hash_b64
         )
     }
 
-    pub async fn code_to_token_request(&self, code: &str, pkce: &str, nonce: Option<String>) -> Result<TokenProvider, TokenRequestError> {
+    pub async fn code_to_token_request(
+        &self,
+        code: &str,
+        pkce: &str,
+        nonce: Option<String>,
+    ) -> Result<TokenProvider, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
         token_request.set_code_verifier(pkce);
@@ -408,15 +468,25 @@ impl OAuthProvider {
             Ok(body) => body,
             Err(e) => {
                 println!("Error serializing token request: {}", e);
-                return Err(TokenRequestError(format!("Error serializing token request: {}", e)));
+                return Err(TokenRequestError(format!(
+                    "Error serializing token request: {}",
+                    e
+                )));
             }
         };
 
-        let auth_header_value = format!("Basic {}", BASE64_STANDARD.encode(format!("{}:{}", self.config.client_id, self.config.client_secret)));
+        let auth_header_value = format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                self.config.client_id, self.config.client_secret
+            ))
+        );
 
         let client = create_http_client()?;
 
-        let token_response_result = client.post(&self.config.token_uri)
+        let token_response_result = client
+            .post(&self.config.token_uri)
             .header("Authorization", auth_header_value)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)
@@ -426,11 +496,13 @@ impl OAuthProvider {
         let token_response = match token_response_result {
             Err(e) => {
                 println!("Error during token request: {}", e);
-                return Err(TokenRequestError(format!("Error during token request: {}", e)));
-            },
+                return Err(TokenRequestError(format!(
+                    "Error during token request: {}",
+                    e
+                )));
+            }
             Ok(response) => response,
         };
-        
 
         println!("Token response status: {}", token_response.status());
         let status = token_response.status();
@@ -439,29 +511,33 @@ impl OAuthProvider {
             Ok(body) => body,
             Err(e) => {
                 println!("Error parsing token response body: {}", e);
-                return Err(TokenRequestError(format!("Error parsing token response body: {}", e)));
+                return Err(TokenRequestError(format!(
+                    "Error parsing token response body: {}",
+                    e
+                )));
             }
         };
 
         println!("raw token response:\n{}", token_raw_response);
 
         if status.as_u16() >= 400 {
-            return Err(TokenRequestError(format!("Token request failed: {} - {}", status, token_raw_response)));
+            return Err(TokenRequestError(format!(
+                "Token request failed: {} - {}",
+                status, token_raw_response
+            )));
         }
 
         let token_response = match serde_json::from_str::<TokenResponse>(&token_raw_response) {
-            Ok(token_response) => {
-                token_response
-            },
+            Ok(token_response) => token_response,
             Err(e) => {
                 println!("Error deserializing token response: {}", e);
-                return Err(TokenRequestError(format!("Error deserializing token response: {}", e)));
+                return Err(TokenRequestError(format!(
+                    "Error deserializing token response: {}",
+                    e
+                )));
             }
         };
 
         Ok((Arc::clone(&self.config), token_response, nonce).into())
     }
 }
-
-
-    

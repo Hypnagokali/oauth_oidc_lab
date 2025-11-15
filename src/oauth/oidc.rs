@@ -1,4 +1,4 @@
-use reqwest::{redirect::Policy, ClientBuilder};
+use reqwest::{ClientBuilder, redirect::Policy};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -17,7 +17,7 @@ impl From<reqwest::Error> for MetaDataError {
 }
 
 #[derive(Deserialize, Debug)]
-pub (crate) struct IssuerMetadata {
+pub(crate) struct IssuerMetadata {
     authorization_endpoint: String,
     token_endpoint: String,
     userinfo_endpoint: String,
@@ -32,9 +32,7 @@ impl IssuerMetadata {
             format!("{}/{}", issuer_url, ".well-known/openid-configuration")
         };
 
-        let client = ClientBuilder::new()
-            .redirect(Policy::none())
-            .build()?;
+        let client = ClientBuilder::new().redirect(Policy::none()).build()?;
 
         let resp = client
             .get(&url)
@@ -47,7 +45,7 @@ impl IssuerMetadata {
 
         Ok(resp)
     }
-    
+
     pub fn authorization_endpoint(&self) -> &str {
         &self.authorization_endpoint
     }
@@ -64,5 +62,3 @@ impl IssuerMetadata {
         &self.jwks_uri
     }
 }
-
-

@@ -1,14 +1,24 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use actix_web::{App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder, cookie::{Cookie, SameSite, time::{Duration, OffsetDateTime}}, get, web::{self, Data, Query}};
-use base64::{prelude::{BASE64_URL_SAFE_NO_PAD}, Engine};
-use maud::{html, Markup};
-use rand::{rand_core::OsError, TryRngCore};
+use actix_web::{
+    App, HttpRequest, HttpResponse, HttpResponseBuilder, HttpServer, Responder,
+    cookie::{
+        Cookie, SameSite,
+        time::{Duration, OffsetDateTime},
+    },
+    get,
+    web::{self, Data, Query},
+};
+use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
+use maud::{Markup, html};
+use rand::{TryRngCore, rand_core::OsError};
 use serde::Deserialize;
 
 use crate::oauth::{
-    provider::{AuthCodeResponse, TokenProvider, TokenRequestError, OAuthConfig, OAuthProvider}, registry::OAuthProviderRegistry, userinfo::UserInfoAttributes, util::is_equal_constant_time
+    provider::{AuthCodeResponse, OAuthConfig, OAuthProvider, TokenProvider, TokenRequestError},
+    registry::OAuthProviderRegistry,
+    util::is_equal_constant_time,
 };
 
 pub mod oauth;
@@ -22,12 +32,6 @@ pub struct KcTestUserInfo {
     sub: String,
     name: String,
     email: Option<String>,
-}
-
-impl UserInfoAttributes for KcTestUserInfo {
-    fn username(&self) -> String {
-        self.name.clone()
-    }
 }
 
 pub struct User {
@@ -47,20 +51,27 @@ impl From<TokenRequestError> for UserMappingError {
 }
 
 pub trait UserMapper: Send + Sync {
-    fn to_user(&self, token_provider: TokenProvider) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>>;
+    fn to_user(
+        &self,
+        token_provider: TokenProvider,
+    ) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>>;
 }
 
 pub struct GitHubUserMapper;
 
 impl UserMapper for GitHubUserMapper {
-    fn to_user(&self, token_provider: TokenProvider) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
+    fn to_user(
+        &self,
+        token_provider: TokenProvider,
+    ) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
         Box::pin(async move {
             let info: Result<GitHubUserInfo, _> = token_provider.user_info().await;
             info.map(|i| User {
                 name: i.login,
                 id: i.id.to_string(),
                 email: i.email,
-            }).map_err(|e| e.into())
+            })
+            .map_err(|e| e.into())
         })
     }
 }
@@ -68,14 +79,18 @@ impl UserMapper for GitHubUserMapper {
 pub struct KeycloakUserMapper;
 
 impl UserMapper for KeycloakUserMapper {
-    fn to_user(&self, token_provider: TokenProvider) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
+    fn to_user(
+        &self,
+        token_provider: TokenProvider,
+    ) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
         Box::pin(async move {
             let info: Result<KcTestUserInfo, _> = token_provider.user_info().await;
             info.map(|i: KcTestUserInfo| User {
                 id: i.sub,
                 name: i.name,
                 email: i.email,
-            }).map_err(|e| e.into())
+            })
+            .map_err(|e| e.into())
         })
     }
 }
@@ -85,13 +100,6 @@ pub struct GitHubUserInfo {
     login: String,
     id: i64,
     email: Option<String>,
-}
-
-// TODO: Is this still needed when there is a UserMapper?
-impl UserInfoAttributes for GitHubUserInfo {
-    fn username(&self) -> String {
-        self.login.clone()
-    }
 }
 
 fn base_cookie_attributes(cookie: &mut Cookie<'_>) {
@@ -140,7 +148,7 @@ async fn sso_callback(
     req: HttpRequest,
     path: web::Path<String>,
     response_query: Query<AuthCodeResponse>,
-    registry: Data<OAuthProviderRegistry>
+    registry: Data<OAuthProviderRegistry>,
 ) -> impl Responder {
     let provider_name = path.into_inner();
     let provider = match registry.get_provider(&provider_name) {
@@ -180,11 +188,14 @@ async fn sso_callback(
         None
     };
 
-    let token_provider = match provider.code_to_token_request(
-        response_query.code(),
-        pkce_cookie.value(),
-        nonce_cookie.as_ref().map(|c| c.value().to_owned()),
-        ).await {
+    let token_provider = match provider
+        .code_to_token_request(
+            response_query.code(),
+            pkce_cookie.value(),
+            nonce_cookie.as_ref().map(|c| c.value().to_owned()),
+        )
+        .await
+    {
         Ok(prov) => prov,
         Err(e) => {
             println!("Error during token request: {}", e);
@@ -204,9 +215,7 @@ async fn sso_callback(
 
     invalidate_cookie(&mut pkce_cookie);
     invalidate_cookie(&mut state_cookie);
-    res
-        .cookie(pkce_cookie)
-        .cookie(state_cookie);
+    res.cookie(pkce_cookie).cookie(state_cookie);
 
     if let Some(mut nonce_cookie) = nonce_cookie {
         invalidate_cookie(&mut nonce_cookie);
@@ -220,17 +229,20 @@ async fn sso_callback(
     // TODO: set session cookie and do redirect
     res
         // TODO: add cache control headers
-        .body(format!("You are logged in. Hi {} (id={}, email={})", user.name, user.id, email))
+        .body(format!(
+            "You are logged in. Hi {} (id={}, email={})",
+            user.name, user.id, email
+        ))
 }
 
 #[get("/login/oauth2/auth/{provider}")]
 async fn login_provider(
     path: web::Path<String>,
-    registry: Data<OAuthProviderRegistry>
+    registry: Data<OAuthProviderRegistry>,
 ) -> impl Responder {
     println!("GET /login/oauth2/auth/{}", path.as_str());
     let provider_name = path.into_inner();
-    
+
     let provider = match registry.get_provider(&provider_name) {
         Some(p) => p,
         None => return HttpResponse::NotFound().body("Provider not found"),
@@ -274,7 +286,6 @@ async fn login_provider(
             .cookie(pkce_cookie)
             .cookie(nonce_cookie)
             .finish()
-
     } else {
         let auth_redirect = provider.build_authentication_url(&state, &pkce);
 
@@ -319,7 +330,8 @@ async fn main() -> std::io::Result<()> {
 
     // Keycloak provider
     if let Ok(keycloak_conf) = OAuthConfig::from_env_with_prefix("KEYCLOAK").await {
-        let keycloak_provider = OAuthProvider::new("keycloak", keycloak_conf, Arc::new(KeycloakUserMapper));
+        let keycloak_provider =
+            OAuthProvider::new("keycloak", keycloak_conf, Arc::new(KeycloakUserMapper));
         providers.push(keycloak_provider);
     }
 
@@ -330,15 +342,14 @@ async fn main() -> std::io::Result<()> {
     let registry = Data::new(OAuthProviderRegistry::from_vec(providers));
 
     HttpServer::new(move || {
-            App::new()
-                .service(login)
-                .service(login_provider)
-                .service(sso_callback)
-                .app_data(registry.clone())
-            
-        })
-        .workers(1)
-        .bind(("127.0.0.1", 5656))?
-        .run()
-        .await
+        App::new()
+            .service(login)
+            .service(login_provider)
+            .service(sso_callback)
+            .app_data(registry.clone())
+    })
+    .workers(1)
+    .bind(("127.0.0.1", 5656))?
+    .run()
+    .await
 }

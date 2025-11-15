@@ -13,10 +13,13 @@ pub struct OAuthProviderRegistry {
 
 impl OAuthProviderRegistry {
     pub fn from_vec(providers: Vec<OAuthProvider>) -> Self {
-        let map: HashMap<String, OAuthProvider> = providers.into_iter()
+        let map: HashMap<String, OAuthProvider> = providers
+            .into_iter()
             .map(|p| (p.name().to_string(), p))
             .collect();
-        Self { providers: Arc::new(map) }
+        Self {
+            providers: Arc::new(map),
+        }
     }
 
     pub fn get_provider(&self, name: &str) -> Option<&OAuthProvider> {

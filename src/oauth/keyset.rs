@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use crate::oauth::client::{CreateHttpClientError, create_http_client};
 use jsonwebtoken::{Algorithm, DecodingKey};
 use thiserror::Error;
-use crate::oauth::client::{create_http_client, CreateHttpClientError};
 
 #[derive(Debug, Error)]
 #[error("Get JWK error: {0}")]
@@ -81,7 +81,9 @@ impl KeyFetcher {
             }
         }
 
-        Err(GetKeyError("Key ID of the token was not found in JWKs".to_string()))
+        Err(GetKeyError(
+            "Key ID of the token was not found in JWKs".to_string(),
+        ))
     }
 }
 
@@ -89,44 +91,44 @@ impl Jwk {
     pub fn to_decoding_key(self) -> Result<(DecodingKey, Algorithm), GetKeyError> {
         match self.0.kty.as_str() {
             "RSA" => {
-                let n = self.0.n.as_ref().ok_or_else(|| {
-                    GetKeyError("Missing 'n' parameter for RSA key".to_string())
-                })?;
-                let e = self.0.e.as_ref().ok_or_else(|| {
-                    GetKeyError("Missing 'e' parameter for RSA key".to_string())
-                })?;
+                let n =
+                    self.0.n.as_ref().ok_or_else(|| {
+                        GetKeyError("Missing 'n' parameter for RSA key".to_string())
+                    })?;
+                let e =
+                    self.0.e.as_ref().ok_or_else(|| {
+                        GetKeyError("Missing 'e' parameter for RSA key".to_string())
+                    })?;
                 let key = DecodingKey::from_rsa_components(n, e)
                     .map_err(|e| GetKeyError(format!("Error creating RSA decoding key: {}", e)))?;
                 Ok((key, self.0.alg.parse()?))
             }
             "EC" => {
-                let x = self.0.x.as_ref().ok_or_else(|| {
-                    GetKeyError("Missing 'x' parameter for EC key".to_string())
-                })?;
-                let y = self.0.y.as_ref().ok_or_else(|| {
-                    GetKeyError("Missing 'y' parameter for EC key".to_string())
-                })?;
+                let x =
+                    self.0.x.as_ref().ok_or_else(|| {
+                        GetKeyError("Missing 'x' parameter for EC key".to_string())
+                    })?;
+                let y =
+                    self.0.y.as_ref().ok_or_else(|| {
+                        GetKeyError("Missing 'y' parameter for EC key".to_string())
+                    })?;
                 let key = DecodingKey::from_ec_components(x, y)
                     .map_err(|e| GetKeyError(format!("Error creating EC decoding key: {}", e)))?;
                 Ok((key, self.0.alg.parse()?))
             }
-            _ => Err(GetKeyError(format!(
-                "Unsupported key type: {}",
-                self.0.kty
-            ))),
+            _ => Err(GetKeyError(format!("Unsupported key type: {}", self.0.kty))),
         }
     }
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+    use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use p256::{ecdsa::SigningKey, elliptic_curve::SecretKey, pkcs8::{EncodePrivateKey}, NistP256};
+    use p256::{NistP256, ecdsa::SigningKey, elliptic_curve::SecretKey, pkcs8::EncodePrivateKey};
     use rand_core::OsRng;
-    use rsa::{pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts, RsaPrivateKey, RsaPublicKey};
+    use rsa::{RsaPrivateKey, RsaPublicKey, pkcs1::EncodeRsaPrivateKey, traits::PublicKeyParts};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -175,7 +177,10 @@ mod tests {
     }
 
     // RSA helpers
-    fn create_token_signed_with_rsa(pkcs1: &[u8], alg: Algorithm) -> Result<String, jsonwebtoken::errors::Error> {
+    fn create_token_signed_with_rsa(
+        pkcs1: &[u8],
+        alg: Algorithm,
+    ) -> Result<String, jsonwebtoken::errors::Error> {
         let encoding_key = EncodingKey::from_rsa_der(pkcs1);
         let mut header = Header::new(alg);
         header.kid = Some("test-rsa".to_string());
@@ -190,7 +195,7 @@ mod tests {
 
     fn create_jwk_rsa(pk: RsaPublicKey, alg: Algorithm) -> Jwk {
         let alg_str = match alg {
-            Algorithm::RS256 => "RS256", 
+            Algorithm::RS256 => "RS256",
             Algorithm::RS384 => "RS384",
             Algorithm::RS512 => "RS512",
             _ => panic!("Unsupported algorithm for RSA JWK"),
@@ -223,7 +228,11 @@ mod tests {
     #[actix_rt::test]
     async fn test_rsa256_jwk_to_decoding_key() {
         let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
-        let token = create_token_signed_with_rsa(private_key.to_pkcs1_der().unwrap().as_bytes(), Algorithm::RS256).unwrap();
+        let token = create_token_signed_with_rsa(
+            private_key.to_pkcs1_der().unwrap().as_bytes(),
+            Algorithm::RS256,
+        )
+        .unwrap();
         let public_key = RsaPublicKey::from(&private_key);
         let jwk = create_jwk_rsa(public_key, Algorithm::RS256);
 
@@ -232,7 +241,7 @@ mod tests {
 
         // Asserts:
         assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
-        
+
         let (key, alg) = res.unwrap();
         assert_eq!(alg, Algorithm::RS256);
 
@@ -247,7 +256,11 @@ mod tests {
     #[actix_rt::test]
     async fn test_rsa512_jwk_to_decoding_key() {
         let private_key = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
-        let token = create_token_signed_with_rsa(private_key.to_pkcs1_der().unwrap().as_bytes(), Algorithm::RS512).unwrap();
+        let token = create_token_signed_with_rsa(
+            private_key.to_pkcs1_der().unwrap().as_bytes(),
+            Algorithm::RS512,
+        )
+        .unwrap();
         let public_key = RsaPublicKey::from(&private_key);
         let jwk = create_jwk_rsa(public_key, Algorithm::RS512);
 
@@ -256,7 +269,7 @@ mod tests {
 
         // Asserts:
         assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
-        
+
         let (key, alg) = res.unwrap();
         assert_eq!(alg, Algorithm::RS512);
 
@@ -267,7 +280,6 @@ mod tests {
         let token_data = jsonwebtoken::decode::<Claims>(&token, &key, &validation).unwrap();
         assert_eq!(token_data.claims.sub, "test-sub");
     }
-
 
     #[actix_rt::test]
     async fn test_ec_jwk_to_decoding_key() {
@@ -284,7 +296,7 @@ mod tests {
 
         // Asserts:
         assert!(res.is_ok(), "to_decoding_key failed: {:?}", res.err());
-        
+
         let (key, alg) = res.unwrap();
         assert_eq!(alg, Algorithm::ES256);
 
@@ -294,6 +306,5 @@ mod tests {
         validation.validate_exp = false;
         let token_data = jsonwebtoken::decode::<Claims>(&token, &key, &validation).unwrap();
         assert_eq!(token_data.claims.sub, "test-sub");
-
     }
 }
