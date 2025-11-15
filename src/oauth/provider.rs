@@ -117,7 +117,7 @@ impl TokenProvider {
             let identity = UserIdentity::from_token(
                 &id_token.raw_token,
                 DefaultTokenValidation,
-                &*self.config,
+                &self.config,
                 &id_token.nonce,
             )
             .await?;
@@ -181,18 +181,18 @@ impl TokenProvider {
         };
 
         match serde_json::from_str::<UA>(&user_body) {
-            Ok(json) => return Ok(json),
+            Ok(json) => Ok(json),
             Err(e) => {
                 println!(
                     "Error parsing user info response. Raw response body:\n{}",
                     user_body
                 );
-                return Err(TokenRequestError(format!(
+                Err(TokenRequestError(format!(
                     "Error parsing user info response: {}",
                     e
-                )));
+                )))
             }
-        };
+        }
     }
 }
 
@@ -204,14 +204,13 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
             expires_in: response.expires_in,
         };
 
-        let id_token = match response.id_token {
-            Some(id_token_str) => Some(IdToken {
+        let id_token = response.id_token.map(|id_token_str| {
+            IdToken {
                 raw_token: id_token_str,
                 // set nonce to an empty string if not provided (should be okay for now)
                 nonce: nonce.unwrap_or_default(),
-            }),
-            None => None,
-        };
+            }
+        });
 
         let refresh_token = match response.refresh_token {
             Some(refresh_token_str) => Some(RefreshToken {
@@ -224,7 +223,7 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
         TokenProvider {
             access_token: Arc::new(access_token),
             id_token,
-            refresh_token: refresh_token.map(|rt| Arc::new(rt)),
+            refresh_token: refresh_token.map(Arc::new),
             config,
         }
     }
@@ -356,6 +355,7 @@ impl OAuthConfig {
         self.metadata.as_ref()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         client_id: String,
         client_secret: String,

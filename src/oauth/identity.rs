@@ -47,6 +47,7 @@ pub trait TokenValidation {
 pub struct DefaultTokenValidation;
 
 impl TokenValidation for DefaultTokenValidation {
+    #[allow(clippy::manual_async_fn)]
     fn validation(
         &self,
         id_token: &str,
@@ -87,7 +88,7 @@ impl<C: DeserializeOwned> UserIdentity<C> {
         config: &OAuthConfig,
         nonce: &str,
     ) -> Result<Self, TokenValidationError> {
-        let key_and_validation = validation.validation(id_token, &config).await?;
+        let key_and_validation = validation.validation(id_token, config).await?;
         let raw: Value =
             jsonwebtoken::decode::<Value>(id_token, &key_and_validation.0, &key_and_validation.1)?
                 .claims;

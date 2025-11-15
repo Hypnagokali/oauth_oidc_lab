@@ -168,7 +168,7 @@ async fn sso_callback(
     // Redirect back to /login
     // max tries: about 3x and then return 401:
     let mut state_cookie = if let Some(state_cookie) = req.cookie(STATE_COOKIE_NAME) {
-        if is_equal_constant_time(state_cookie.value(), state_from_provider) == false {
+        if !is_equal_constant_time(state_cookie.value(), state_from_provider) {
             return unauthorized_error_and_invalidate_cookies("Invalid state parameter");
         }
         state_cookie
