@@ -7,6 +7,7 @@ use base64::{
     Engine,
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
 };
+use rand::{TryRngCore, rand_core::OsError, rngs::OsRng};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::Digest;
 
@@ -413,7 +414,6 @@ impl OAuthProvider {
         }
     }
 
-    /// Return the provider name as supplied during construction.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -426,19 +426,16 @@ impl OAuthProvider {
         self.config.is_openid()
     }
 
-    pub fn build_authentication_url_with_nonce(
+    /// Build an authentication URL and generate state, pkce and optional nonce.
+    /// Returns (redirect_url, state, pkce, nonce)
+    pub fn build_authentication_url(
         &self,
-        state: &str,
-        pkce_challenge: &str,
-        nonce: &str,
-    ) -> String {
-        let base_url = self.build_authentication_url(state, pkce_challenge);
-        format!("{}&nonce={}", base_url, nonce)
-    }
+    ) -> Result<(String, String, String, Option<String>), OsError> {
+        let state = generate_random_code()?;
+        let pkce = generate_random_code()?;
 
-    pub fn build_authentication_url(&self, state: &str, pkce_challenge: &str) -> String {
         let mut hasher = sha2::Sha256::new();
-        hasher.update(pkce_challenge.as_bytes());
+        hasher.update(pkce.as_bytes());
         let hash_bytes = hasher.finalize();
         let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);
 
@@ -448,10 +445,20 @@ impl OAuthProvider {
         let scope = self.config.scopes.join(" ");
 
         // Hardcoded response_type=code and code_challenge_method=S256 for now
-        format!(
+        let mut url = format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge_method=S256&code_challenge={}",
             self.config.auth_uri, self.config.client_id, redirect_uri, scope, state, pkce_hash_b64
-        )
+        );
+
+        let nonce = if self.config.is_openid() {
+            let n = generate_random_code()?;
+            url = format!("{}&nonce={}", url, n);
+            Some(n)
+        } else {
+            None
+        };
+
+        Ok((url, state, pkce, nonce))
     }
 
     pub async fn code_to_token_request(
@@ -540,4 +547,10 @@ impl OAuthProvider {
 
         Ok((Arc::clone(&self.config), token_response, nonce).into())
     }
+}
+
+fn generate_random_code() -> Result<String, OsError> {
+    let mut random_bytes = [0u8; 64];
+    OsRng.try_fill_bytes(&mut random_bytes)?;
+    Ok(BASE64_URL_SAFE_NO_PAD.encode(random_bytes))
 }
