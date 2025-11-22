@@ -5,7 +5,7 @@ use actix_web::{App, HttpServer, Responder, get, web::Data};
 use serde::Deserialize;
 
 use crate::oauth::{
-    provider::{OAuthConfig, OAuthProvider, TokenProvider, TokenRequestError},
+    provider::{OAuthConfig, OAuthProvider, PkceMethod, TokenProvider, TokenRequestError},
     registry::OAuthProviderRegistry,
 };
 
@@ -111,8 +111,10 @@ async fn main() -> std::io::Result<()> {
 
     let mut providers: Vec<OAuthProvider> = Vec::new();
 
-    // GitHub provider
-    if let Ok(github_conf) = OAuthConfig::from_env_with_prefix("GITHUB").await {
+    // GitHub provider with PKCE S256
+    if let Ok(mut github_conf) = OAuthConfig::from_env_with_prefix("GITHUB").await {
+        github_conf.set_pkce_method(PkceMethod::S256);
+
         let github_provider = OAuthProvider::new("github", github_conf, Arc::new(GitHubUserMapper));
         providers.push(github_provider);
     }
