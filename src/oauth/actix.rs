@@ -64,11 +64,11 @@ async fn sso_callback(
         None => return unauthorized_error_and_invalidate_cookies("Invalid provider"),
     };
 
-    let pkce_cookie = if let Some(pkce_cookie) = req.cookie(PKCE_COOKIE_NAME) {
-        pkce_cookie
-    } else {
+    let pkce_cookie = req.cookie(PKCE_COOKIE_NAME);
+    
+    if pkce_cookie.is_none() && provider.pkce_method().is_required() {
         return unauthorized_error_and_invalidate_cookies("Missing PKCE cookie");
-    };
+    }
 
     let state_cookie = if let Some(state_cookie) = req.cookie(STATE_COOKIE_NAME) {
         state_cookie
@@ -88,7 +88,7 @@ async fn sso_callback(
     let token_provider_res = provider
         .code_to_token_request(
             response_query.code(),
-            pkce_cookie.value(),
+            pkce_cookie.map(|v| v.to_string()),
             nonce_cookie.map(|s| s.to_string()),
         )
         .await;
@@ -145,26 +145,26 @@ async fn login_provider(
         }
     };
 
+    let mut res_builder = HttpResponse::TemporaryRedirect();
+
+    res_builder
+        .append_header(("Location", auth_redirect))
+        .append_header(("Cache-Control", "no-store"));
+
     let state_cookie = create_cookie(STATE_COOKIE_NAME, &state);
-    let pkce_cookie = create_cookie(PKCE_COOKIE_NAME, &pkce);
+    res_builder.cookie(state_cookie);
+
+    if let Some(pkce_val) = pkce {
+        let pkce_cookie = create_cookie(PKCE_COOKIE_NAME, &pkce_val);
+        res_builder.cookie(pkce_cookie);   
+    }
 
     if let Some(nonce_val) = nonce {
         let nonce_cookie = create_cookie(NONCE_COOKIE_NAME, &nonce_val);
-        HttpResponse::TemporaryRedirect()
-            .append_header(("Location", auth_redirect))
-            .append_header(("Cache-Control", "no-store"))
-            .cookie(state_cookie)
-            .cookie(pkce_cookie)
-            .cookie(nonce_cookie)
-            .finish()
-    } else {
-        HttpResponse::TemporaryRedirect()
-            .append_header(("Location", auth_redirect))
-            .append_header(("Cache-Control", "no-store"))
-            .cookie(state_cookie)
-            .cookie(pkce_cookie)
-            .finish()
+        res_builder.cookie(nonce_cookie);
     }
+
+    res_builder.finish()
 }
 
 /// Configuration function to create an scope with OAuth endpoints.

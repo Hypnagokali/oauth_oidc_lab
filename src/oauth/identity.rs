@@ -120,7 +120,7 @@ mod tests {
 
     use crate::oauth::{
         identity::{TokenValidation, TokenValidationError},
-        provider::OAuthConfig,
+        provider::{OAuthConfig, PkceMethod},
     };
 
     use super::UserIdentity;
@@ -160,6 +160,7 @@ mod tests {
             "".into(),
             Vec::new(),
             None,
+            PkceMethod::None
         );
 
         let id_token = concat!(

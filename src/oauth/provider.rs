@@ -256,9 +256,21 @@ impl From<VarError> for OAuthConfigError {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub enum PkceMethod {
+    None,
+    Plain,
+    S256,
+}
+
+impl PkceMethod {
+    pub fn is_required(&self) -> bool {
+        self != &PkceMethod::None
+    }
+}
+
 #[derive(Debug)]
 pub struct OAuthConfig {
-    // ToDo: pkce and method needed
     client_id: String,
     client_secret: String,
     redirect_uri: String,
@@ -266,6 +278,7 @@ pub struct OAuthConfig {
     token_uri: String,
     userinfo_endpoint: String,
     scopes: Vec<String>,
+    pkce_method: PkceMethod,
     metadata: Option<IssuerMetadata>,
 }
 
@@ -282,6 +295,10 @@ fn read_env_var(key: &str) -> Result<String, OAuthConfigError> {
 impl OAuthConfig {
     pub async fn from_env() -> Result<Self, OAuthConfigError> {
         Self::from_env_with_prefix("").await
+    }
+
+    pub fn set_pkce_method(&mut self, method: PkceMethod) {
+        self.pkce_method = method;
     }
 
     pub async fn from_env_with_prefix(provider_name: &str) -> Result<Self, OAuthConfigError> {
@@ -316,6 +333,7 @@ impl OAuthConfig {
                         metadata.userinfo_endpoint().to_string(),
                         scopes,
                         Some(metadata),
+                        PkceMethod::None,
                     );
 
                     return Ok(conf);
@@ -341,6 +359,7 @@ impl OAuthConfig {
             user_info_endpoint,
             scopes,
             None,
+            PkceMethod::None,
         ))
     }
 
@@ -366,6 +385,7 @@ impl OAuthConfig {
         userinfo_endpoint: String,
         scopes: Vec<String>,
         oidc_metadata: Option<IssuerMetadata>,
+        pkce_method: PkceMethod,
     ) -> Self {
         Self {
             client_id,
@@ -376,6 +396,7 @@ impl OAuthConfig {
             userinfo_endpoint,
             scopes,
             metadata: oidc_metadata,
+            pkce_method,
         }
     }
 
@@ -418,6 +439,10 @@ impl OAuthProvider {
         &self.name
     }
 
+    pub fn pkce_method(&self) -> &PkceMethod {
+        &self.config.pkce_method
+    }
+
     pub fn mapper(&self) -> Arc<dyn UserMapper> {
         Arc::clone(&self.user_mapper)
     }
@@ -430,24 +455,35 @@ impl OAuthProvider {
     /// Returns (redirect_url, state, pkce, nonce)
     pub fn build_authentication_url(
         &self,
-    ) -> Result<(String, String, String, Option<String>), OsError> {
+    ) -> Result<(String, String, Option<String>, Option<String>), OsError> {
         let state = generate_random_code()?;
-        let pkce = generate_random_code()?;
 
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(pkce.as_bytes());
-        let hash_bytes = hasher.finalize();
-        let pkce_hash_b64 = BASE64_URL_SAFE_NO_PAD.encode(hash_bytes);
+        let pkce = match self.config.pkce_method {
+            PkceMethod::None => None,
+            PkceMethod::Plain => Some(("plain", generate_random_code()?)),
+            PkceMethod::S256 => {
+                let pkce = generate_random_code()?;
+                let mut hasher = sha2::Sha256::new();
+                hasher.update(pkce.as_bytes());
+                let hash_bytes = hasher.finalize();
+                Some(("S256", BASE64_URL_SAFE_NO_PAD.encode(hash_bytes)))
+            },
+        };
+        
 
         let redirect_uri = urlencoding::encode(&self.config.redirect_uri);
 
         // TODO: handle empty scopes
         let scope = self.config.scopes.join(" ");
 
-        // Hardcoded response_type=code and code_challenge_method=S256 for now
+        let pkce_param = match pkce {
+            Some((method, ref value)) => format!("&code_challenge_method={}&code_challenge={}", method, value),            
+            None => "".to_owned(),
+        };
+
         let mut url = format!(
-            "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge_method=S256&code_challenge={}",
-            self.config.auth_uri, self.config.client_id, redirect_uri, scope, state, pkce_hash_b64
+            "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}{}",
+            self.config.auth_uri, self.config.client_id, redirect_uri, scope, state, pkce_param
         );
 
         let nonce = if self.config.is_openid() {
@@ -458,18 +494,21 @@ impl OAuthProvider {
             None
         };
 
-        Ok((url, state, pkce, nonce))
+        Ok((url, state, pkce.map(|(_, value)| value), nonce))
     }
 
     pub async fn code_to_token_request(
         &self,
         code: &str,
-        pkce: &str,
+        pkce: Option<String>,
         nonce: Option<String>,
     ) -> Result<TokenProvider, TokenRequestError> {
         let mut token_request = self.config.token_request();
         token_request.set_code(code);
-        token_request.set_code_verifier(pkce);
+
+        if let Some(pkce) = pkce {
+            token_request.set_code_verifier(&pkce);
+        }
 
         let body = match token_request.to_urlencoded() {
             Ok(body) => body,
