@@ -4,12 +4,12 @@ use std::sync::Arc;
 use actix_web::{App, HttpServer, Responder, get, web::Data};
 use serde::Deserialize;
 
-use crate::oauth::{
-    provider::{OAuthConfig, OAuthProvider, PkceMethod, TokenProvider, TokenRequestError},
-    registry::OAuthProviderRegistry,
-};
+use crate::{frameworks::actix, oauth::{
+    config::{OAuthConfig, PkceMethod}, provider::{OAuthProvider, TokenProvider, TokenRequestError}, registry::OAuthProviderRegistry
+}};
 
 pub mod oauth;
+pub mod frameworks;
 
 pub struct User {
     id: String,
@@ -135,7 +135,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .service(login)
-            .service(oauth::actix::oauth_scope(registry.clone()))
+            .service(actix::oauth_scope(registry.clone()))
     })
     .workers(1)
     .bind(("127.0.0.1", 5656))?

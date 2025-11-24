@@ -4,9 +4,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::oauth::{
-    keyset::{GetKeyError, KeyFetcher},
-    provider::OAuthConfig,
-    util::is_equal_constant_time,
+    config::OAuthConfig, keyset::{GetKeyError, KeyFetcher}, util::is_equal_constant_time
 };
 
 pub struct UserIdentity<C> {
@@ -120,7 +118,7 @@ mod tests {
 
     use crate::oauth::{
         identity::{TokenValidation, TokenValidationError},
-        provider::{OAuthConfig, PkceMethod},
+        config::{OAuthConfig, PkceMethod},
     };
 
     use super::UserIdentity;
