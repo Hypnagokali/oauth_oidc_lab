@@ -1,58 +1,19 @@
-use std::{
-    env::{self, VarError},
-    sync::Arc,
-};
+use std:: sync::Arc;
 
 use base64::{
     Engine,
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
 };
 use rand::{TryRngCore, rand_core::OsError, rngs::OsRng};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, de::DeserializeOwned};
 use sha2::Digest;
 
 use crate::{
     UserMapper,
     oauth::{
-        client::{CreateHttpClientError, create_http_client},
-        identity::{DefaultTokenValidation, TokenValidationError, UserIdentity},
-        oidc::IssuerMetadata,
+        client::{CreateHttpClientError, TokenResponse, create_http_client}, config::{OAuthConfig, PkceMethod}, identity::{DefaultTokenValidation, TokenValidationError, UserIdentity}
     },
 };
-
-#[derive(Serialize)]
-struct TokenRequest {
-    grant_type: String,
-    code: String,
-    redirect_uri: String,
-    code_verifier: String,
-}
-
-impl TokenRequest {
-    pub fn set_code(&mut self, code: &str) {
-        self.code = code.to_string();
-    }
-
-    pub fn set_code_verifier(&mut self, code_verifier: &str) {
-        self.code_verifier = code_verifier.to_string();
-    }
-
-    pub fn to_urlencoded(&self) -> Result<String, serde_urlencoded::ser::Error> {
-        serde_urlencoded::to_string(self)
-    }
-}
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    id_token: Option<String>,
-    expires_in: Option<u64>,
-    refresh_expires_in: Option<u64>,
-    refresh_token: Option<String>,
-    #[allow(dead_code)]
-    scope: Option<String>,
-}
 
 pub struct AccessToken {
     raw_token: String,
@@ -135,7 +96,7 @@ impl TokenProvider {
         let client = create_http_client()?;
 
         let user_response_result = client
-            .get(&self.config.userinfo_endpoint)
+            .get(self.config.userinfo_endpoint())
             .header(
                 "Authorization",
                 format!(
@@ -199,24 +160,24 @@ impl TokenProvider {
 
 impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
     fn from((config, response, nonce): (Arc<OAuthConfig>, TokenResponse, Option<String>)) -> Self {
-        let access_token = AccessToken {
-            raw_token: response.access_token,
-            token_type: response.token_type,
-            expires_in: response.expires_in,
+        let access_token: AccessToken = AccessToken {
+            raw_token: response.access_token().to_owned(),
+            token_type: response.token_type().to_owned(),
+            expires_in: response.expires_in(),
         };
 
-        let id_token = response.id_token.map(|id_token_str| {
+        let id_token = response.id_token().map(|id_token_str| {
             IdToken {
-                raw_token: id_token_str,
+                raw_token: id_token_str.to_owned(),
                 // set nonce to an empty string if not provided (should be okay for now)
                 nonce: nonce.unwrap_or_default(),
             }
         });
 
-        let refresh_token = match response.refresh_token {
+        let refresh_token = match response.refresh_token() {
             Some(refresh_token_str) => Some(RefreshToken {
-                raw_token: refresh_token_str,
-                expires_in: response.refresh_expires_in,
+                raw_token: refresh_token_str.to_owned(),
+                expires_in: response.refresh_expires_in(),
             }),
             None => None,
         };
@@ -243,170 +204,6 @@ impl AuthCodeResponse {
 
     pub fn state(&self) -> &str {
         &self.state
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("OAuthConfig error: {0}")]
-pub struct OAuthConfigError(pub String);
-
-impl From<VarError> for OAuthConfigError {
-    fn from(err: VarError) -> Self {
-        OAuthConfigError(err.to_string())
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum PkceMethod {
-    None,
-    Plain,
-    S256,
-}
-
-impl PkceMethod {
-    pub fn is_required(&self) -> bool {
-        self != &PkceMethod::None
-    }
-}
-
-#[derive(Debug)]
-pub struct OAuthConfig {
-    client_id: String,
-    client_secret: String,
-    redirect_uri: String,
-    auth_uri: String,
-    token_uri: String,
-    userinfo_endpoint: String,
-    scopes: Vec<String>,
-    pkce_method: PkceMethod,
-    metadata: Option<IssuerMetadata>,
-}
-
-fn read_env_var(key: &str) -> Result<String, OAuthConfigError> {
-    match env::var(key) {
-        Ok(value) => Ok(value),
-        Err(e) => Err(OAuthConfigError(format!(
-            "Failed to read .env variable {}: {}",
-            key, e
-        ))),
-    }
-}
-
-impl OAuthConfig {
-    pub async fn from_env() -> Result<Self, OAuthConfigError> {
-        Self::from_env_with_prefix("").await
-    }
-
-    pub fn set_pkce_method(&mut self, method: PkceMethod) {
-        self.pkce_method = method;
-    }
-
-    pub async fn from_env_with_prefix(provider_name: &str) -> Result<Self, OAuthConfigError> {
-        let prefix = format!("{}_", provider_name.to_uppercase());
-
-        let client_id = read_env_var(&format!("{}CLIENT_ID", prefix))?;
-        let client_secret = read_env_var(&format!("{}CLIENT_SECRET", prefix))?;
-        let scopes_from_env = read_env_var(&format!("{}SCOPES", prefix)).unwrap_or("".into());
-        let host = read_env_var("HOST")?;
-
-        let provider_name = provider_name.to_lowercase();
-        let redirect_uri = format!("{}/login/oauth2/code/{}", host, provider_name);
-
-        let scopes: Vec<String> = scopes_from_env
-            .split(',')
-            .map(|s| s.trim().to_lowercase().to_string())
-            .collect();
-
-        if scopes_from_env.contains("openid") {
-            match env::var(format!("{}ISSUER_URL", prefix)) {
-                Ok(issuer_url) => {
-                    let metadata = IssuerMetadata::from_issuer(&issuer_url)
-                        .await
-                        .expect("Failed to fetch OIDC metadata");
-
-                    let conf = OAuthConfig::new(
-                        client_id,
-                        client_secret,
-                        redirect_uri,
-                        metadata.authorization_endpoint().to_string(),
-                        metadata.token_endpoint().to_string(),
-                        metadata.userinfo_endpoint().to_string(),
-                        scopes,
-                        Some(metadata),
-                        PkceMethod::None,
-                    );
-
-                    return Ok(conf);
-                }
-                Err(_) => {
-                    println!(
-                        "Missing {prefix}ISSUER_URL. No provider discovery possible. OAuthConfig will now use manual vars instead."
-                    );
-                }
-            }
-        }
-
-        let auth_uri = env::var(format!("{}AUTH_URI", prefix))?;
-        let token_uri = env::var(format!("{}TOKEN_URI", prefix))?;
-        let user_info_endpoint = env::var(format!("{}USERINFO_ENDPOINT", prefix))?;
-
-        Ok(OAuthConfig::new(
-            client_id,
-            client_secret,
-            redirect_uri,
-            auth_uri,
-            token_uri,
-            user_info_endpoint,
-            scopes,
-            None,
-            PkceMethod::None,
-        ))
-    }
-
-    pub fn is_openid(&self) -> bool {
-        self.scopes.iter().any(|s| s == "openid")
-    }
-
-    pub fn client_id(&self) -> &str {
-        &self.client_id
-    }
-
-    pub(crate) fn metadata(&self) -> Option<&IssuerMetadata> {
-        self.metadata.as_ref()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        client_id: String,
-        client_secret: String,
-        redirect_uri: String,
-        auth_uri: String,
-        token_uri: String,
-        userinfo_endpoint: String,
-        scopes: Vec<String>,
-        oidc_metadata: Option<IssuerMetadata>,
-        pkce_method: PkceMethod,
-    ) -> Self {
-        Self {
-            client_id,
-            client_secret,
-            redirect_uri,
-            auth_uri,
-            token_uri,
-            userinfo_endpoint,
-            scopes,
-            metadata: oidc_metadata,
-            pkce_method,
-        }
-    }
-
-    fn token_request(&self) -> TokenRequest {
-        TokenRequest {
-            grant_type: "authorization_code".to_string(),
-            code: "".to_string(),
-            redirect_uri: self.redirect_uri.clone(),
-            code_verifier: "".to_string(),
-        }
     }
 }
 
@@ -440,7 +237,7 @@ impl OAuthProvider {
     }
 
     pub fn pkce_method(&self) -> &PkceMethod {
-        &self.config.pkce_method
+        &self.config.pkce_method()
     }
 
     pub fn mapper(&self) -> Arc<dyn UserMapper> {
@@ -458,7 +255,7 @@ impl OAuthProvider {
     ) -> Result<(String, String, Option<String>, Option<String>), OsError> {
         let state = generate_random_code()?;
 
-        let pkce = match self.config.pkce_method {
+        let pkce = match self.config.pkce_method() {
             PkceMethod::None => None,
             PkceMethod::Plain => Some(("plain", generate_random_code()?)),
             PkceMethod::S256 => {
@@ -471,10 +268,10 @@ impl OAuthProvider {
         };
         
 
-        let redirect_uri = urlencoding::encode(&self.config.redirect_uri);
+        let redirect_uri = urlencoding::encode(&self.config.redirect_uri());
 
         // TODO: handle empty scopes
-        let scope = self.config.scopes.join(" ");
+        let scope = self.config.scopes().join(" ");
 
         let pkce_param = match pkce {
             Some((method, ref value)) => format!("&code_challenge_method={}&code_challenge={}", method, value),            
@@ -483,7 +280,7 @@ impl OAuthProvider {
 
         let mut url = format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}{}",
-            self.config.auth_uri, self.config.client_id, redirect_uri, scope, state, pkce_param
+            self.config.auth_uri(), self.config.client_id(), redirect_uri, scope, state, pkce_param
         );
 
         let nonce = if self.config.is_openid() {
@@ -525,14 +322,14 @@ impl OAuthProvider {
             "Basic {}",
             BASE64_STANDARD.encode(format!(
                 "{}:{}",
-                self.config.client_id, self.config.client_secret
+                self.config.client_id(), self.config.client_secret()
             ))
         );
 
         let client = create_http_client()?;
 
         let token_response_result = client
-            .post(&self.config.token_uri)
+            .post(self.config.token_uri())
             .header("Authorization", auth_header_value)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body)

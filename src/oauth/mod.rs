@@ -1,4 +1,4 @@
-pub mod actix;
+pub mod config;
 pub mod client;
 pub mod identity;
 pub mod keyset;
