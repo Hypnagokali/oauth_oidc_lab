@@ -1,16 +1,18 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use actix_web::{App, HttpServer, Responder, get, web::Data};
+use actix_web::{App, HttpResponseBuilder, HttpServer, Responder, get, web::Data};
 use serde::Deserialize;
 
-use crate::{frameworks::actix, oauth::{
+use crate::{frameworks::flow::{self, OAuthRoutes}, oauth::{
     config::{OAuthConfig, PkceMethod}, provider::{OAuthProvider, TokenProvider, TokenRequestError}, registry::OAuthProviderRegistry
-}};
+}, session::{LoginSuccessHandler, SessionCreationError}};
 
 pub mod oauth;
 pub mod frameworks;
+pub mod session;
 
+#[derive(Deserialize)]
 pub struct User {
     id: String,
     name: String,
@@ -105,6 +107,21 @@ async fn login() -> impl Responder {
     }
 }
 
+pub struct SimpleLoginSuccessHandler;
+
+impl LoginSuccessHandler for SimpleLoginSuccessHandler {
+    fn on_login_success(
+        &self,
+        res: HttpResponseBuilder,
+        user: &User,
+    ) -> impl Future<Output = Result<HttpResponseBuilder, SessionCreationError>> {
+        async move {
+            println!("User logged in successfully: {:?}", user.email);
+            Ok(res)
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
@@ -135,7 +152,7 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .service(login)
-            .service(actix::oauth_scope(registry.clone()))
+            .service(flow::oauth_scope(registry.clone(), OAuthRoutes::new(SimpleLoginSuccessHandler)))
     })
     .workers(1)
     .bind(("127.0.0.1", 5656))?
