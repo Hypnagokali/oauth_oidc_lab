@@ -1,4 +1,8 @@
 use crate::oauth::util::is_equal_constant_time;
+use crate::session::LoginSuccessHandler;
+use actix_web::Resource;
+use actix_web::dev::{AppService, HttpServiceFactory};
+use actix_web::guard::Get;
 use actix_web::web::Data;
 use actix_web::{
     HttpRequest, HttpResponse, HttpResponseBuilder, Responder,
@@ -6,7 +10,7 @@ use actix_web::{
         Cookie, SameSite,
         time::{Duration, OffsetDateTime},
     },
-    get, web,
+    web,
 };
 
 use crate::oauth::provider::AuthCodeResponse;
@@ -16,45 +20,40 @@ const PKCE_COOKIE_NAME: &str = "pkce";
 const NONCE_COOKIE_NAME: &str = "nonce";
 const STATE_COOKIE_NAME: &str = "state";
 
-fn base_cookie_attributes(cookie: &mut Cookie<'_>) {
-    cookie.set_http_only(true);
-    cookie.set_path("/");
-    cookie.set_same_site(SameSite::Lax);
+pub struct OAuthRoutes<S: LoginSuccessHandler> {
+    pub login_success_handler: S,
 }
 
-fn invalidate_cookie(cookie: &mut Cookie<'_>) {
-    cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(1));
-    base_cookie_attributes(cookie);
-}
-
-fn invalidated_cookies(res: &mut HttpResponseBuilder) {
-    let cookies = [PKCE_COOKIE_NAME, STATE_COOKIE_NAME, NONCE_COOKIE_NAME];
-    for cookie in cookies.iter() {
-        let mut c = Cookie::new(cookie.to_string(), "".to_string());
-        invalidate_cookie(&mut c);
-        res.cookie(c);
+impl<S: LoginSuccessHandler> OAuthRoutes<S> {
+    pub fn new(login_success_handler: S) -> Self {
+        OAuthRoutes { login_success_handler }
     }
 }
 
-fn unauthorized_error_and_invalidate_cookies(msg: &str) -> HttpResponse {
-    let mut response = HttpResponse::Unauthorized();
-    invalidated_cookies(&mut response);
-    response.body(msg.to_string())
-}
+impl<S: LoginSuccessHandler + 'static> HttpServiceFactory for OAuthRoutes<S> {
+    fn register(self, config: &mut AppService) {
+        
+        Resource::new("/login/oauth2/code/{provider}")
+            .name("actix_auth_endpoint")
+            .guard(Get())
+            .to(sso_callback::<S>)
+            .app_data(Data::new(self.login_success_handler))
+            .register(config);
 
-fn create_cookie(name: &str, value: &str) -> Cookie<'static> {
-    let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
-    cookie.set_max_age(Duration::minutes(15));
-    base_cookie_attributes(&mut cookie);
-    cookie
+        Resource::new("/login/oauth2/auth/{provider}")
+            .name("actix_auth_endpoint")
+            .guard(Get())
+            .to(login_provider)
+            .register(config);
+    }
 }
 
 /// This is the callback handler that exchanges the code for a token and then uses the provider's
 /// configured `UserMapper` to map the TokenProvider into a `User`.
-#[get("/login/oauth2/code/{provider}")]
-async fn sso_callback(
+async fn sso_callback<S: LoginSuccessHandler>(
     req: HttpRequest,
     path: web::Path<String>,
+    login_success_handler: Data<S>,
     response_query: web::Query<AuthCodeResponse>,
     registry: Data<OAuthProviderRegistry>,
 ) -> impl Responder {
@@ -113,18 +112,22 @@ async fn sso_callback(
 
     invalidated_cookies(&mut res);
 
-    let email = match &user.email {
-        Some(e) => e.as_str(),
-        None => "no email provided",
-    };
-    res.body(format!(
-        "You are logged in. Hi {} (id={}, email={})",
-        user.name, user.id, email
-    ))
+    match login_success_handler.on_login_success(res, &user).await {
+        Ok(mut res) => {
+            let email = match &user.email {
+                Some(e) => e.as_str(),
+                None => "no email provided",
+            };
+            res.body(format!(
+                "You are logged in. Hi {} (id={}, email={})",
+                user.name, user.id, email
+            ))
+        }
+        Err(_) => unauthorized_error_and_invalidate_cookies("Session creation error"),
+    }    
 }
 
 /// Authentication initiation endpoint. Redirects the user to the provider's authentication URL.
-#[get("/login/oauth2/auth/{provider}")]
 async fn login_provider(
     path: web::Path<String>,
     registry: Data<OAuthProviderRegistry>,
@@ -168,9 +171,43 @@ async fn login_provider(
 }
 
 /// Configuration function to create an scope with OAuth endpoints.
-pub fn oauth_scope(registry: Data<OAuthProviderRegistry>) -> actix_web::Scope {
+pub fn oauth_scope<S: LoginSuccessHandler + 'static>(
+    registry: Data<OAuthProviderRegistry>,
+    oauth_routes: OAuthRoutes<S>) -> actix_web::Scope {
     web::scope("")
         .app_data(registry)
-        .service(login_provider)
-        .service(sso_callback)
+        .service(oauth_routes)
+}
+
+fn base_cookie_attributes(cookie: &mut Cookie<'_>) {
+    cookie.set_http_only(true);
+    cookie.set_path("/");
+    cookie.set_same_site(SameSite::Lax);
+}
+
+fn invalidate_cookie(cookie: &mut Cookie<'_>) {
+    cookie.set_expires(OffsetDateTime::now_utc() - Duration::days(1));
+    base_cookie_attributes(cookie);
+}
+
+fn invalidated_cookies(res: &mut HttpResponseBuilder) {
+    let cookies = [PKCE_COOKIE_NAME, STATE_COOKIE_NAME, NONCE_COOKIE_NAME];
+    for cookie in cookies.iter() {
+        let mut c = Cookie::new(cookie.to_string(), "".to_string());
+        invalidate_cookie(&mut c);
+        res.cookie(c);
+    }
+}
+
+fn unauthorized_error_and_invalidate_cookies(msg: &str) -> HttpResponse {
+    let mut response = HttpResponse::Unauthorized();
+    invalidated_cookies(&mut response);
+    response.body(msg.to_string())
+}
+
+fn create_cookie(name: &str, value: &str) -> Cookie<'static> {
+    let mut cookie = Cookie::new(name.to_owned(), value.to_owned());
+    cookie.set_max_age(Duration::minutes(15));
+    base_cookie_attributes(&mut cookie);
+    cookie
 }
