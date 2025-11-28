@@ -1,8 +1,11 @@
+use std::vec;
+
 use crate::oauth::util::is_equal_constant_time;
 use crate::session::LoginSuccessHandler;
 use actix_web::Resource;
 use actix_web::dev::{AppService, HttpServiceFactory};
 use actix_web::guard::Get;
+use actix_web::http::header::{CacheControl, CacheDirective};
 use actix_web::web::Data;
 use actix_web::{
     HttpRequest, HttpResponse, HttpResponseBuilder, Responder,
@@ -20,13 +23,32 @@ const PKCE_COOKIE_NAME: &str = "pkce";
 const NONCE_COOKIE_NAME: &str = "nonce";
 const STATE_COOKIE_NAME: &str = "state";
 
+struct DefaultRedirect {
+    url: String,
+}
+
+impl DefaultRedirect {
+    fn new(url: String) -> Self {
+        DefaultRedirect { url }
+    }
+}
+
 pub struct OAuthRoutes<S: LoginSuccessHandler> {
-    pub login_success_handler: S,
+    login_success_handler: S,
+    default_redirect_after_login: Option<DefaultRedirect>,
 }
 
 impl<S: LoginSuccessHandler> OAuthRoutes<S> {
     pub fn new(login_success_handler: S) -> Self {
-        OAuthRoutes { login_success_handler }
+        OAuthRoutes { login_success_handler, default_redirect_after_login: None }
+    }
+
+    pub fn with_default_redirect_after_login(
+        mut self,
+        redirect_url: String,
+    ) -> Self {
+        self.default_redirect_after_login = Some(DefaultRedirect::new(redirect_url));
+        self
     }
 }
 
@@ -38,6 +60,7 @@ impl<S: LoginSuccessHandler + 'static> HttpServiceFactory for OAuthRoutes<S> {
             .guard(Get())
             .to(sso_callback::<S>)
             .app_data(Data::new(self.login_success_handler))
+            .app_data(Data::new(self.default_redirect_after_login))
             .register(config);
 
         Resource::new("/login/oauth2/auth/{provider}")
@@ -56,6 +79,7 @@ async fn sso_callback<S: LoginSuccessHandler>(
     login_success_handler: Data<S>,
     response_query: web::Query<AuthCodeResponse>,
     registry: Data<OAuthProviderRegistry>,
+    default_redirect_after_login: Data<Option<DefaultRedirect>>,
 ) -> impl Responder {
     let provider_name = path.into_inner();
     let provider = match registry.get_provider(&provider_name) {
@@ -108,11 +132,19 @@ async fn sso_callback<S: LoginSuccessHandler>(
         }
     };
 
-    let mut res = HttpResponse::Ok();
+    let mut res = HttpResponse::TemporaryRedirect();
+    res.insert_header(CacheControl(vec![CacheDirective::NoStore, CacheDirective::MaxAge(0)]));
+
+    let redirect = match default_redirect_after_login.as_ref() {
+        Some(red) => red.url.to_string(),
+        None => "/".to_string(),
+    };
+
+    res.insert_header(("Location", redirect));
 
     invalidated_cookies(&mut res);
 
-    match login_success_handler.on_login_success(res, &user).await {
+    match login_success_handler.on_login_success(req, res, &user).await {
         Ok(mut res) => {
             let email = match &user.email {
                 Some(e) => e.as_str(),

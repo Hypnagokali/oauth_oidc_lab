@@ -1,4 +1,4 @@
-use actix_web::HttpResponseBuilder;
+use actix_web::{HttpRequest, HttpResponseBuilder};
 use thiserror::Error;
 
 use crate::User;
@@ -13,6 +13,7 @@ pub trait LoginSuccessHandler {
     // type U: DeserializeOwned + 'static;
     fn on_login_success(
         &self,
+        req: HttpRequest,
         res: HttpResponseBuilder,
         user: &User,
     ) -> impl Future<Output = Result<HttpResponseBuilder, SessionCreationError>>;

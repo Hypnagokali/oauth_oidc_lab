@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use actix_web::{App, HttpResponseBuilder, HttpServer, Responder, get, web::Data};
+use actix_web::{App, HttpRequest, HttpResponseBuilder, HttpServer, Responder, get, web::Data};
 use serde::Deserialize;
 
 use crate::{frameworks::flow::{self, OAuthRoutes}, oauth::{
@@ -112,11 +112,12 @@ pub struct SimpleLoginSuccessHandler;
 impl LoginSuccessHandler for SimpleLoginSuccessHandler {
     fn on_login_success(
         &self,
+        _: HttpRequest,
         res: HttpResponseBuilder,
         user: &User,
     ) -> impl Future<Output = Result<HttpResponseBuilder, SessionCreationError>> {
         async move {
-            println!("User logged in successfully: {:?}", user.email);
+            println!("User logged in successfully: {:?}", user.name);
             Ok(res)
         }
     }
