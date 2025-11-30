@@ -7,13 +7,13 @@ use crate::oauth::provider::OAuthProvider;
 #[error("Provider registry error: {0}")]
 pub struct ProviderRegistryError(pub String);
 
-pub struct OAuthProviderRegistry {
-    providers: Arc<HashMap<String, OAuthProvider>>,
+pub struct OAuthProviderRegistry<U> {
+    providers: Arc<HashMap<String, OAuthProvider<U>>>,
 }
 
-impl OAuthProviderRegistry {
-    pub fn from_vec(providers: Vec<OAuthProvider>) -> Self {
-        let map: HashMap<String, OAuthProvider> = providers
+impl<U> OAuthProviderRegistry<U> {
+    pub fn from_vec(providers: Vec<OAuthProvider<U>>) -> Self {
+        let map: HashMap<String, OAuthProvider<U>> = providers
             .into_iter()
             .map(|p| (p.name().to_string(), p))
             .collect();
@@ -22,7 +22,7 @@ impl OAuthProviderRegistry {
         }
     }
 
-    pub fn get_provider(&self, name: &str) -> Option<&OAuthProvider> {
+    pub fn get_provider(&self, name: &str) -> Option<&OAuthProvider<U>> {
         self.providers.get(name)
     }
 }

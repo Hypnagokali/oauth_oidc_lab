@@ -217,14 +217,14 @@ impl From<CreateHttpClientError> for TokenRequestError {
     }
 }
 
-pub struct OAuthProvider {
+pub struct OAuthProvider<U> {
     name: String,
     config: Arc<OAuthConfig>,
-    user_mapper: Arc<dyn UserMapper>,
+    user_mapper: Arc<dyn UserMapper<User=U>>,
 }
 
-impl OAuthProvider {
-    pub fn new(name: &str, config: OAuthConfig, user_mapper: Arc<dyn UserMapper>) -> Self {
+impl<U> OAuthProvider<U> {
+    pub fn new(name: &str, config: OAuthConfig, user_mapper: Arc<dyn UserMapper<User=U>>) -> Self {
         OAuthProvider {
             name: name.to_owned(),
             config: Arc::new(config),
@@ -240,7 +240,7 @@ impl OAuthProvider {
         &self.config.pkce_method()
     }
 
-    pub fn mapper(&self) -> Arc<dyn UserMapper> {
+    pub fn mapper(&self) -> Arc<dyn UserMapper<User=U>> {
         Arc::clone(&self.user_mapper)
     }
 
