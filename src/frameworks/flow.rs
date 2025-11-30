@@ -15,6 +15,7 @@ use actix_web::{
     },
     web,
 };
+use serde::de::DeserializeOwned;
 
 use crate::oauth::provider::AuthCodeResponse;
 use crate::oauth::registry::OAuthProviderRegistry;
@@ -33,14 +34,15 @@ impl DefaultRedirect {
     }
 }
 
-pub struct OAuthRoutes<S: LoginSuccessHandler> {
+pub struct OAuthRoutes<U, S: LoginSuccessHandler<U>> {
     login_success_handler: S,
     default_redirect_after_login: Option<DefaultRedirect>,
+    _phantom: std::marker::PhantomData<U>,
 }
 
-impl<S: LoginSuccessHandler> OAuthRoutes<S> {
+impl<U: DeserializeOwned, S: LoginSuccessHandler<U>> OAuthRoutes<U, S> {
     pub fn new(login_success_handler: S) -> Self {
-        OAuthRoutes { login_success_handler, default_redirect_after_login: None }
+        OAuthRoutes { login_success_handler, default_redirect_after_login: None, _phantom: std::marker::PhantomData }
     }
 
     pub fn with_default_redirect_after_login(
@@ -52,13 +54,13 @@ impl<S: LoginSuccessHandler> OAuthRoutes<S> {
     }
 }
 
-impl<S: LoginSuccessHandler + 'static> HttpServiceFactory for OAuthRoutes<S> {
+impl<U: 'static, S: LoginSuccessHandler<U> + 'static> HttpServiceFactory for OAuthRoutes<U, S> {
     fn register(self, config: &mut AppService) {
         
         Resource::new("/login/oauth2/code/{provider}")
             .name("actix_auth_endpoint")
             .guard(Get())
-            .to(sso_callback::<S>)
+            .to(sso_callback::<U, S>)
             .app_data(Data::new(self.login_success_handler))
             .app_data(Data::new(self.default_redirect_after_login))
             .register(config);
@@ -66,19 +68,19 @@ impl<S: LoginSuccessHandler + 'static> HttpServiceFactory for OAuthRoutes<S> {
         Resource::new("/login/oauth2/auth/{provider}")
             .name("actix_auth_endpoint")
             .guard(Get())
-            .to(login_provider)
+            .to(login_provider::<U>)
             .register(config);
     }
 }
 
 /// This is the callback handler that exchanges the code for a token and then uses the provider's
 /// configured `UserMapper` to map the TokenProvider into a `User`.
-async fn sso_callback<S: LoginSuccessHandler>(
+async fn sso_callback<U, S: LoginSuccessHandler<U>>(
     req: HttpRequest,
     path: web::Path<String>,
     login_success_handler: Data<S>,
     response_query: web::Query<AuthCodeResponse>,
-    registry: Data<OAuthProviderRegistry>,
+    registry: Data<OAuthProviderRegistry<U>>,
     default_redirect_after_login: Data<Option<DefaultRedirect>>,
 ) -> impl Responder {
     let provider_name = path.into_inner();
@@ -124,7 +126,7 @@ async fn sso_callback<S: LoginSuccessHandler>(
         }
     };
 
-    let user = match provider.mapper().to_user(token_provider).await {
+    let user: U = match provider.mapper().to_user(token_provider).await {
         Ok(user) => user,
         Err(e) => {
             println!("Error fetching user info: {}", e);
@@ -145,24 +147,15 @@ async fn sso_callback<S: LoginSuccessHandler>(
     invalidated_cookies(&mut res);
 
     match login_success_handler.on_login_success(req, res, &user).await {
-        Ok(mut res) => {
-            let email = match &user.email {
-                Some(e) => e.as_str(),
-                None => "no email provided",
-            };
-            res.body(format!(
-                "You are logged in. Hi {} (id={}, email={})",
-                user.name, user.id, email
-            ))
-        }
+        Ok(mut res) => res.finish(),
         Err(_) => unauthorized_error_and_invalidate_cookies("Session creation error"),
     }    
 }
 
 /// Authentication initiation endpoint. Redirects the user to the provider's authentication URL.
-async fn login_provider(
+async fn login_provider<U>(
     path: web::Path<String>,
-    registry: Data<OAuthProviderRegistry>,
+    registry: Data<OAuthProviderRegistry<U>>,
 ) -> impl Responder {
     let provider_name = path.into_inner();
 
@@ -203,9 +196,9 @@ async fn login_provider(
 }
 
 /// Configuration function to create an scope with OAuth endpoints.
-pub fn oauth_scope<S: LoginSuccessHandler + 'static>(
-    registry: Data<OAuthProviderRegistry>,
-    oauth_routes: OAuthRoutes<S>) -> actix_web::Scope {
+pub fn oauth_scope<U: 'static, S: LoginSuccessHandler<U> + 'static>(
+    registry: Data<OAuthProviderRegistry<U>>,
+    oauth_routes: OAuthRoutes<U, S>) -> actix_web::Scope {
     web::scope("")
         .app_data(registry)
         .service(oauth_routes)

@@ -13,7 +13,7 @@ pub mod frameworks;
 pub mod session;
 
 #[derive(Deserialize)]
-pub struct User {
+pub struct MyUser {
     id: String,
     name: String,
     email: Option<String>,
@@ -30,10 +30,11 @@ impl From<TokenRequestError> for UserMappingError {
 }
 
 pub trait UserMapper: Send + Sync {
+    type User;
     fn to_user(
         &self,
         token_provider: TokenProvider,
-    ) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Self::User, UserMappingError>> + Send>>;
 }
 
 /// UserInfo struct for GitHub's user info response.
@@ -48,13 +49,15 @@ pub struct GitHubUserInfo {
 pub struct GitHubUserMapper;
 
 impl UserMapper for GitHubUserMapper {
+    type User = MyUser;
+
     fn to_user(
         &self,
         token_provider: TokenProvider,
-    ) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::User, UserMappingError>> + Send>> {
         Box::pin(async move {
             let info: Result<GitHubUserInfo, _> = token_provider.user_info().await;
-            info.map(|i| User {
+            info.map(|i| MyUser {
                 name: i.login,
                 id: i.id.to_string(),
                 email: i.email,
@@ -76,13 +79,14 @@ pub struct KcTestUserInfo {
 pub struct KeycloakUserMapper;
 
 impl UserMapper for KeycloakUserMapper {
+    type User = MyUser;
     fn to_user(
         &self,
         token_provider: TokenProvider,
-    ) -> Pin<Box<dyn Future<Output = Result<User, UserMappingError>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Self::User, UserMappingError>> + Send>> {
         Box::pin(async move {
             let info: Result<KcTestUserInfo, _> = token_provider.user_info().await;
-            info.map(|i: KcTestUserInfo| User {
+            info.map(|i: KcTestUserInfo| MyUser {
                 id: i.sub,
                 name: i.name,
                 email: i.email,
@@ -109,15 +113,15 @@ async fn login() -> impl Responder {
 
 pub struct SimpleLoginSuccessHandler;
 
-impl LoginSuccessHandler for SimpleLoginSuccessHandler {
+impl LoginSuccessHandler<MyUser> for SimpleLoginSuccessHandler {
     fn on_login_success(
         &self,
         _: HttpRequest,
         res: HttpResponseBuilder,
-        user: &User,
+        user: &MyUser,
     ) -> impl Future<Output = Result<HttpResponseBuilder, SessionCreationError>> {
         async move {
-            println!("User logged in successfully: {:?}", user.name);
+            println!("User logged in successfully: id={}, name={}, email={:?}", user.id, user.name, user.email);
             Ok(res)
         }
     }
@@ -127,7 +131,7 @@ impl LoginSuccessHandler for SimpleLoginSuccessHandler {
 async fn main() -> std::io::Result<()> {
     dotenv::dotenv().ok();
 
-    let mut providers: Vec<OAuthProvider> = Vec::new();
+    let mut providers: Vec<OAuthProvider<MyUser>> = Vec::new();
 
     // GitHub provider with PKCE S256
     if let Ok(mut github_conf) = OAuthConfig::from_env_with_prefix("GITHUB").await {
