@@ -221,8 +221,7 @@ mod tests {
 
     fn create_token(secret: SecretKey<NistP256>) -> String {
         let pkcs8 = secret.to_pkcs8_der().unwrap();
-        let token = sign_with_ec(&pkcs8.to_bytes()).expect("failed to sign token");
-        token
+        sign_with_ec(&pkcs8.to_bytes()).expect("failed to sign token")
     }
 
     #[actix_rt::test]

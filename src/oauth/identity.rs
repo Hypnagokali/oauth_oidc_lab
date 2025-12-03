@@ -4,7 +4,9 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::oauth::{
-    config::OAuthConfig, keyset::{GetKeyError, KeyFetcher}, util::is_equal_constant_time
+    config::OAuthConfig,
+    keyset::{GetKeyError, KeyFetcher},
+    util::is_equal_constant_time,
 };
 
 pub struct UserIdentity<C> {
@@ -117,27 +119,25 @@ mod tests {
     use jsonwebtoken::{DecodingKey, Validation};
 
     use crate::oauth::{
-        identity::{TokenValidation, TokenValidationError},
         config::{OAuthConfig, PkceMethod},
+        identity::{TokenValidation, TokenValidationError},
     };
 
     use super::UserIdentity;
 
     struct TestValidation;
     impl TokenValidation for TestValidation {
-        fn validation(
+        async fn validation(
             &self,
             _id_token: &str,
             _config: &OAuthConfig,
-        ) -> impl Future<Output = Result<(DecodingKey, Validation), TokenValidationError>> {
-            async move {
-                let key = DecodingKey::from_secret("".as_ref());
-                let mut validation = Validation::default();
-                validation.insecure_disable_signature_validation();
-                validation.validate_exp = false;
-                validation.validate_aud = false;
-                Ok((key, validation))
-            }
+        ) -> Result<(DecodingKey, Validation), TokenValidationError> {
+            let key = DecodingKey::from_secret("".as_ref());
+            let mut validation = Validation::default();
+            validation.insecure_disable_signature_validation();
+            validation.validate_exp = false;
+            validation.validate_aud = false;
+            Ok((key, validation))
         }
     }
 
@@ -158,7 +158,7 @@ mod tests {
             "".into(),
             Vec::new(),
             None,
-            PkceMethod::None
+            PkceMethod::None,
         );
 
         let id_token = concat!(

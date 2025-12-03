@@ -42,13 +42,14 @@ pub struct OAuthRoutes<U, S: LoginSuccessHandler<U>> {
 
 impl<U: DeserializeOwned, S: LoginSuccessHandler<U>> OAuthRoutes<U, S> {
     pub fn new(login_success_handler: S) -> Self {
-        OAuthRoutes { login_success_handler, default_redirect_after_login: None, _phantom: std::marker::PhantomData }
+        OAuthRoutes {
+            login_success_handler,
+            default_redirect_after_login: None,
+            _phantom: std::marker::PhantomData,
+        }
     }
 
-    pub fn with_default_redirect_after_login(
-        mut self,
-        redirect_url: String,
-    ) -> Self {
+    pub fn with_default_redirect_after_login(mut self, redirect_url: String) -> Self {
         self.default_redirect_after_login = Some(DefaultRedirect::new(redirect_url));
         self
     }
@@ -56,7 +57,6 @@ impl<U: DeserializeOwned, S: LoginSuccessHandler<U>> OAuthRoutes<U, S> {
 
 impl<U: 'static, S: LoginSuccessHandler<U> + 'static> HttpServiceFactory for OAuthRoutes<U, S> {
     fn register(self, config: &mut AppService) {
-        
         Resource::new("/login/oauth2/code/{provider}")
             .name("actix_auth_endpoint")
             .guard(Get())
@@ -90,7 +90,7 @@ async fn sso_callback<U, S: LoginSuccessHandler<U>>(
     };
 
     let pkce_cookie = req.cookie(PKCE_COOKIE_NAME);
-    
+
     if pkce_cookie.is_none() && provider.pkce_method().is_required() {
         return unauthorized_error_and_invalidate_cookies("Missing PKCE cookie");
     }
@@ -135,7 +135,10 @@ async fn sso_callback<U, S: LoginSuccessHandler<U>>(
     };
 
     let mut res = HttpResponse::TemporaryRedirect();
-    res.insert_header(CacheControl(vec![CacheDirective::NoStore, CacheDirective::MaxAge(0)]));
+    res.insert_header(CacheControl(vec![
+        CacheDirective::NoStore,
+        CacheDirective::MaxAge(0),
+    ]));
 
     let redirect = match default_redirect_after_login.as_ref() {
         Some(red) => red.url.to_string(),
@@ -146,10 +149,13 @@ async fn sso_callback<U, S: LoginSuccessHandler<U>>(
 
     invalidated_cookies(&mut res);
 
-    match login_success_handler.on_login_success(req, res, &user).await {
+    match login_success_handler
+        .on_login_success(req, res, &user)
+        .await
+    {
         Ok(mut res) => res.finish(),
         Err(_) => unauthorized_error_and_invalidate_cookies("Session creation error"),
-    }    
+    }
 }
 
 /// Authentication initiation endpoint. Redirects the user to the provider's authentication URL.
@@ -184,7 +190,7 @@ async fn login_provider<U>(
 
     if let Some(pkce_val) = pkce {
         let pkce_cookie = create_cookie(PKCE_COOKIE_NAME, &pkce_val);
-        res_builder.cookie(pkce_cookie);   
+        res_builder.cookie(pkce_cookie);
     }
 
     if let Some(nonce_val) = nonce {
@@ -198,10 +204,9 @@ async fn login_provider<U>(
 /// Configuration function to create an scope with OAuth endpoints.
 pub fn oauth_scope<U: 'static, S: LoginSuccessHandler<U> + 'static>(
     registry: Data<OAuthProviderRegistry<U>>,
-    oauth_routes: OAuthRoutes<U, S>) -> actix_web::Scope {
-    web::scope("")
-        .app_data(registry)
-        .service(oauth_routes)
+    oauth_routes: OAuthRoutes<U, S>,
+) -> actix_web::Scope {
+    web::scope("").app_data(registry).service(oauth_routes)
 }
 
 fn base_cookie_attributes(cookie: &mut Cookie<'_>) {

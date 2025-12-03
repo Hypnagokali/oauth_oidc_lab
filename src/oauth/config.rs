@@ -57,7 +57,7 @@ impl OAuthConfig {
         &self.client_id
     }
 
-    pub (crate) fn client_secret(&self) -> &str {
+    pub(crate) fn client_secret(&self) -> &str {
         &self.client_secret
     }
 
@@ -184,7 +184,7 @@ impl OAuthConfig {
         }
     }
 
-    pub (crate)fn token_request(&self) -> TokenRequest {
+    pub(crate) fn token_request(&self) -> TokenRequest {
         TokenRequest::new("authorization_code", &self.redirect_uri)
     }
 }

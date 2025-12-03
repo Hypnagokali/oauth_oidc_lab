@@ -1,4 +1,4 @@
-use std:: sync::Arc;
+use std::sync::Arc;
 
 use base64::{
     Engine,
@@ -11,7 +11,9 @@ use sha2::Digest;
 use crate::{
     UserMapper,
     oauth::{
-        client::{CreateHttpClientError, TokenResponse, create_http_client}, config::{OAuthConfig, PkceMethod}, identity::{DefaultTokenValidation, TokenValidationError, UserIdentity}
+        client::{CreateHttpClientError, TokenResponse, create_http_client},
+        config::{OAuthConfig, PkceMethod},
+        identity::{DefaultTokenValidation, TokenValidationError, UserIdentity},
     },
 };
 
@@ -174,13 +176,12 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
             }
         });
 
-        let refresh_token = match response.refresh_token() {
-            Some(refresh_token_str) => Some(RefreshToken {
+        let refresh_token = response
+            .refresh_token()
+            .map(|refresh_token_str| RefreshToken {
                 raw_token: refresh_token_str.to_owned(),
                 expires_in: response.refresh_expires_in(),
-            }),
-            None => None,
-        };
+            });
 
         TokenProvider {
             access_token: Arc::new(access_token),
@@ -220,11 +221,15 @@ impl From<CreateHttpClientError> for TokenRequestError {
 pub struct OAuthProvider<U> {
     name: String,
     config: Arc<OAuthConfig>,
-    user_mapper: Arc<dyn UserMapper<User=U>>,
+    user_mapper: Arc<dyn UserMapper<User = U>>,
 }
 
 impl<U> OAuthProvider<U> {
-    pub fn new(name: &str, config: OAuthConfig, user_mapper: Arc<dyn UserMapper<User=U>>) -> Self {
+    pub fn new(
+        name: &str,
+        config: OAuthConfig,
+        user_mapper: Arc<dyn UserMapper<User = U>>,
+    ) -> Self {
         OAuthProvider {
             name: name.to_owned(),
             config: Arc::new(config),
@@ -237,10 +242,10 @@ impl<U> OAuthProvider<U> {
     }
 
     pub fn pkce_method(&self) -> &PkceMethod {
-        &self.config.pkce_method()
+        self.config.pkce_method()
     }
 
-    pub fn mapper(&self) -> Arc<dyn UserMapper<User=U>> {
+    pub fn mapper(&self) -> Arc<dyn UserMapper<User = U>> {
         Arc::clone(&self.user_mapper)
     }
 
@@ -264,23 +269,29 @@ impl<U> OAuthProvider<U> {
                 hasher.update(pkce.as_bytes());
                 let hash_bytes = hasher.finalize();
                 Some(("S256", BASE64_URL_SAFE_NO_PAD.encode(hash_bytes)))
-            },
+            }
         };
-        
 
-        let redirect_uri = urlencoding::encode(&self.config.redirect_uri());
+        let redirect_uri = urlencoding::encode(self.config.redirect_uri());
 
         // TODO: handle empty scopes
         let scope = self.config.scopes().join(" ");
 
         let pkce_param = match pkce {
-            Some((method, ref value)) => format!("&code_challenge_method={}&code_challenge={}", method, value),            
+            Some((method, ref value)) => {
+                format!("&code_challenge_method={}&code_challenge={}", method, value)
+            }
             None => "".to_owned(),
         };
 
         let mut url = format!(
             "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}{}",
-            self.config.auth_uri(), self.config.client_id(), redirect_uri, scope, state, pkce_param
+            self.config.auth_uri(),
+            self.config.client_id(),
+            redirect_uri,
+            scope,
+            state,
+            pkce_param
         );
 
         let nonce = if self.config.is_openid() {
@@ -322,7 +333,8 @@ impl<U> OAuthProvider<U> {
             "Basic {}",
             BASE64_STANDARD.encode(format!(
                 "{}:{}",
-                self.config.client_id(), self.config.client_secret()
+                self.config.client_id(),
+                self.config.client_secret()
             ))
         );
 

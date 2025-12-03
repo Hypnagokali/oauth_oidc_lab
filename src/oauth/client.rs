@@ -6,7 +6,7 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub (crate) struct TokenRequest {
+pub(crate) struct TokenRequest {
     grant_type: String,
     code: String,
     redirect_uri: String,
@@ -37,7 +37,7 @@ impl TokenRequest {
 }
 
 #[derive(Deserialize)]
-pub (crate) struct TokenResponse {
+pub(crate) struct TokenResponse {
     access_token: String,
     token_type: String,
     id_token: Option<String>,
@@ -56,7 +56,7 @@ impl TokenResponse {
     pub fn expires_in(&self) -> Option<u64> {
         self.expires_in
     }
-    
+
     pub fn access_token(&self) -> &str {
         &self.access_token
     }

@@ -4,12 +4,18 @@ use std::sync::Arc;
 use actix_web::{App, HttpRequest, HttpResponseBuilder, HttpServer, Responder, get, web::Data};
 use serde::Deserialize;
 
-use crate::{frameworks::flow::{self, OAuthRoutes}, oauth::{
-    config::{OAuthConfig, PkceMethod}, provider::{OAuthProvider, TokenProvider, TokenRequestError}, registry::OAuthProviderRegistry
-}, session::{LoginSuccessHandler, SessionCreationError}};
+use crate::{
+    frameworks::flow::{self, OAuthRoutes},
+    oauth::{
+        config::{OAuthConfig, PkceMethod},
+        provider::{OAuthProvider, TokenProvider, TokenRequestError},
+        registry::OAuthProviderRegistry,
+    },
+    session::{LoginSuccessHandler, SessionCreationError},
+};
 
-pub mod oauth;
 pub mod frameworks;
+pub mod oauth;
 pub mod session;
 
 #[derive(Deserialize)]
@@ -114,16 +120,17 @@ async fn login() -> impl Responder {
 pub struct SimpleLoginSuccessHandler;
 
 impl LoginSuccessHandler<MyUser> for SimpleLoginSuccessHandler {
-    fn on_login_success(
+    async fn on_login_success(
         &self,
         _: HttpRequest,
         res: HttpResponseBuilder,
         user: &MyUser,
-    ) -> impl Future<Output = Result<HttpResponseBuilder, SessionCreationError>> {
-        async move {
-            println!("User logged in successfully: id={}, name={}, email={:?}", user.id, user.name, user.email);
-            Ok(res)
-        }
+    ) -> Result<HttpResponseBuilder, SessionCreationError> {
+        println!(
+            "User logged in successfully: id={}, name={}, email={:?}",
+            user.id, user.name, user.email
+        );
+        Ok(res)
     }
 }
 
@@ -155,9 +162,10 @@ async fn main() -> std::io::Result<()> {
     let registry = Data::new(OAuthProviderRegistry::from_vec(providers));
 
     HttpServer::new(move || {
-        App::new()
-            .service(login)
-            .service(flow::oauth_scope(registry.clone(), OAuthRoutes::new(SimpleLoginSuccessHandler)))
+        App::new().service(login).service(flow::oauth_scope(
+            registry.clone(),
+            OAuthRoutes::new(SimpleLoginSuccessHandler),
+        ))
     })
     .workers(1)
     .bind(("127.0.0.1", 5656))?

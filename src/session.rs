@@ -15,4 +15,3 @@ pub trait LoginSuccessHandler<U> {
         user: &U,
     ) -> impl Future<Output = Result<HttpResponseBuilder, SessionCreationError>>;
 }
-
