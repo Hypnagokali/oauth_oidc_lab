@@ -1,20 +1,18 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use actix_web::{App, HttpRequest, HttpResponseBuilder, HttpServer, Responder, get, web::Data};
+use actix_web::{App, HttpRequest, HttpResponseBuilder, HttpServer, Responder, cookie::Cookie, get, web::Data};
 use serde::Deserialize;
 
 use crate::{
-    frameworks::flow::{self, OAuthRoutes},
-    oauth::{
+    flow::OAuthRoutes, oauth::{
         config::{OAuthConfig, PkceMethod},
         provider::{OAuthProvider, TokenProvider, TokenRequestError},
         registry::OAuthProviderRegistry,
-    },
-    session::{LoginSuccessHandler, SessionCreationError},
+    }, session::{LoginSuccessHandler, SessionCreationError}
 };
 
-pub mod frameworks;
+pub mod flow;
 pub mod oauth;
 pub mod session;
 
@@ -123,13 +121,15 @@ impl LoginSuccessHandler<MyUser> for SimpleLoginSuccessHandler {
     async fn on_login_success(
         &self,
         _: HttpRequest,
-        res: HttpResponseBuilder,
+        mut res: HttpResponseBuilder,
         user: &MyUser,
     ) -> Result<HttpResponseBuilder, SessionCreationError> {
         println!(
             "User logged in successfully: id={}, name={}, email={:?}",
             user.id, user.name, user.email
         );
+        let session = Cookie::new("dummy_session", "dummy_value");
+        res.cookie(session);
         Ok(res)
     }
 }
