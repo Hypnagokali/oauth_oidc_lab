@@ -100,6 +100,33 @@ impl UserMapper for KeycloakUserMapper {
     }
 }
 
+#[get("/account")]
+async fn account_page(req: HttpRequest) -> impl Responder {
+    use maud::html;
+    let session = req.cookie("dummy_session");
+    if session.is_none() {
+        html! {
+            html {
+                body {
+                    h1 { "Not logged in" }
+                    div { a href="/" { "Home" } }
+                }
+            }
+        }
+    } else {
+        html! {
+            html {
+                body {
+                    h1 { "Account page" }
+                    p { "This is a dummy account page" }
+                    // TODO: back channel logout
+                    // div { a href="/logout" { "Logout" } }
+                }
+            }
+        }
+    }    
+}
+
 #[get("/")]
 async fn login() -> impl Responder {
     use maud::html;
@@ -128,7 +155,7 @@ impl LoginSuccessHandler<MyUser> for SimpleLoginSuccessHandler {
             "User logged in successfully: id={}, name={}, email={:?}",
             user.id, user.name, user.email
         );
-        let session = Cookie::new("dummy_session", "dummy_value");
+        let session = Cookie::new("dummy_session", format!("{}", user.name));
         res.cookie(session);
         Ok(res)
     }
@@ -164,7 +191,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new().service(login).service(flow::oauth_scope(
             registry.clone(),
-            OAuthRoutes::new(SimpleLoginSuccessHandler),
+            OAuthRoutes::new(SimpleLoginSuccessHandler)
+                .with_default_redirect_after_login("/account"),
         ))
     })
     .workers(1)

@@ -49,8 +49,8 @@ impl<U: DeserializeOwned, S: LoginSuccessHandler<U>> OAuthRoutes<U, S> {
         }
     }
 
-    pub fn with_default_redirect_after_login(mut self, redirect_url: String) -> Self {
-        self.default_redirect_after_login = Some(DefaultRedirect::new(redirect_url));
+    pub fn with_default_redirect_after_login(mut self, redirect_url: &str) -> Self {
+        self.default_redirect_after_login = Some(DefaultRedirect::new(redirect_url.to_owned()));
         self
     }
 }
