@@ -134,7 +134,6 @@ async fn login() -> impl Responder {
         html {
             body {
                 h1 { "Login page" }
-                p { "This is a dummy site, nothing works at the moment" }
                 div { a href="/login/oauth2/auth/github" { "Login with GitHub" } }
                 div { a href="/login/oauth2/auth/keycloak" { "Login with Keycloak" } }
             }
