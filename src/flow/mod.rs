@@ -15,14 +15,49 @@ use actix_web::{
     },
     web,
 };
+use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::oauth::provider::AuthCodeResponse;
 use crate::oauth::registry::OAuthProviderRegistry;
 
 const PKCE_COOKIE_NAME: &str = "pkce";
 const NONCE_COOKIE_NAME: &str = "nonce";
 const STATE_COOKIE_NAME: &str = "state";
+
+#[derive(Deserialize)]
+struct AuthCodeResponse {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+impl AuthCodeResponse {
+    fn is_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    fn success_response(&self) -> AuthSuccessResponse {
+        AuthSuccessResponse {
+            code: self.code.clone().unwrap(),
+            state: self.state.clone().unwrap(),
+        }
+    }
+
+    fn error_response(&self) -> AuthErrorResponse {
+        AuthErrorResponse {
+            error: self.error.clone().unwrap(),
+        }
+    }
+}
+
+struct AuthErrorResponse {
+    error: String,
+}
+
+struct AuthSuccessResponse {
+    code: String,
+    state: String,
+}
 
 struct DefaultRedirect {
     url: String,
@@ -79,10 +114,17 @@ async fn sso_callback<U, S: LoginSuccessHandler<U>>(
     req: HttpRequest,
     path: web::Path<String>,
     login_success_handler: Data<S>,
-    response_query: web::Query<AuthCodeResponse>,
+    oauth_response_query: web::Query<AuthCodeResponse>,
     registry: Data<OAuthProviderRegistry<U>>,
     default_redirect_after_login: Data<Option<DefaultRedirect>>,
 ) -> impl Responder {
+    if oauth_response_query.is_error() {
+        return unauthorized_error_and_invalidate_cookies(
+            format!("Provider returned an error: {}", oauth_response_query.error_response().error).as_str()
+        );
+    }
+
+    let response_query = oauth_response_query.success_response();
     let provider_name = path.into_inner();
     let provider = match registry.get_provider(&provider_name) {
         Some(p) => p,
@@ -106,13 +148,13 @@ async fn sso_callback<U, S: LoginSuccessHandler<U>>(
         return unauthorized_error_and_invalidate_cookies("Missing nonce cookie");
     }
 
-    if !is_equal_constant_time(state_cookie.value(), response_query.state()) {
+    if !is_equal_constant_time(state_cookie.value(), &response_query.state) {
         return unauthorized_error_and_invalidate_cookies("Invalid state parameter");
     }
 
     let token_provider_res = provider
         .code_to_token_request(
-            response_query.code(),
+            &response_query.code,
             pkce_cookie.map(|v| v.to_string()),
             nonce_cookie.map(|s| s.to_string()),
         )
@@ -180,6 +222,8 @@ async fn login_provider<U>(
     };
 
     let mut res_builder = HttpResponse::TemporaryRedirect();
+
+    println!("redirect to: {}", auth_redirect);
 
     res_builder
         .append_header(("Location", auth_redirect))

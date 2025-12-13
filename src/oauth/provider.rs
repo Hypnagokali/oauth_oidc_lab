@@ -5,7 +5,7 @@ use base64::{
     prelude::{BASE64_STANDARD, BASE64_URL_SAFE_NO_PAD},
 };
 use rand::{TryRngCore, rand_core::OsError, rngs::OsRng};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use sha2::Digest;
 
 use crate::{
@@ -189,22 +189,6 @@ impl From<(Arc<OAuthConfig>, TokenResponse, Option<String>)> for TokenProvider {
             refresh_token: refresh_token.map(Arc::new),
             config,
         }
-    }
-}
-
-#[derive(Deserialize)]
-pub struct AuthCodeResponse {
-    code: String,
-    state: String,
-}
-
-impl AuthCodeResponse {
-    pub fn code(&self) -> &str {
-        &self.code
-    }
-
-    pub fn state(&self) -> &str {
-        &self.state
     }
 }
 
